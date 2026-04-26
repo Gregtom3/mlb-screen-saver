@@ -1,3 +1,3 @@
-// /ui — overlays: tooltips, box score, channel switcher, standings strip.
-// Subscribes to sim events; never mutates them. Phase 3+.
-export const UI_PHASE_PLACEHOLDER = true;
+// /ui — DOM-based overlays. Subscribes to sim events / aggregates; never
+// mutates them. Phase 5.5 brings the stats menu.
+export { mountMenu, type MenuView, type MenuContext } from './menu.js';

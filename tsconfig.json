@@ -28,7 +28,9 @@
     "season/**/*.ts",
     "director/**/*.ts",
     "app/**/*.ts",
-    "content/**/*.ts"
+    "content/**/*.ts",
+    "stats/**/*.ts",
+    "projections/**/*.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

@@ -11,6 +11,8 @@ import {
   type TeamStanding,
   type SceneContext,
 } from '../render/index.js';
+import { mountMenu } from '../ui/index.js';
+import { buildSeasonAggregates, type FinishedGame, type SeasonAggregates } from '../stats/index.js';
 
 // Phase 3 browser entry. Pre-simulates a few days of games so we have
 // standings, then puts day N+1 on screen as 8 simultaneous "channels".
@@ -180,23 +182,26 @@ const main = () => {
   const league = generateInitialLeague(SEED);
   const schedule = buildSchedule(league.teams, league.season.year);
 
-  // ---- Compute standings from history days (no event retention).
-  const standings = new Map<TeamId, TeamStanding>();
-  for (const team of league.teams) standings.set(team.id, { wins: 0, losses: 0 });
+  // ---- Pre-simulate history days. Keep events around so /stats can build
+  // full season aggregates (the standings map is now derived from these).
+  const historyGames: FinishedGame[] = [];
   for (let day = 1; day < LIVE_DAY; day++) {
     for (const entry of schedule.entries.filter((e) => e.day === day)) {
       const { input } = buildGameInput(league, entry, SEED);
       const events = runGame(input);
-      const last = events[events.length - 1];
-      if (last?.kind !== 'gameEnd') continue;
-      const homeWon = last.finalRuns.home > last.finalRuns.away;
-      const winnerId = homeWon ? entry.homeTeamId : entry.awayTeamId;
-      const loserId = homeWon ? entry.awayTeamId : entry.homeTeamId;
-      const w = standings.get(winnerId);
-      const l = standings.get(loserId);
-      if (w) standings.set(winnerId, { wins: w.wins + 1, losses: w.losses });
-      if (l) standings.set(loserId, { wins: l.wins, losses: l.losses + 1 });
+      historyGames.push({ events, input });
     }
+  }
+  const aggregates: SeasonAggregates = buildSeasonAggregates(
+    historyGames,
+    league.teams,
+    league.season.year,
+  );
+  // Convert TeamLine → TeamStanding for the existing HUD strip.
+  const standings = new Map<TeamId, TeamStanding>();
+  for (const team of league.teams) {
+    const line = aggregates.teams.get(team.id);
+    standings.set(team.id, line ? { wins: line.W, losses: line.L } : { wins: 0, losses: 0 });
   }
 
   // ---- Pre-simulate live-day games and keep their event logs.
@@ -258,6 +263,34 @@ const main = () => {
   });
 
   setupControls(handle, channelLabel, getChannelText);
+
+  // ---- Stats menu (phase 5.5).
+  const playerIndex = new Map(league.players.map((p) => [p.id, p]));
+  const teamGamesPlayed = LIVE_DAY - 1; // each team has played one game per history day
+  const menu = mountMenu(document.body, {
+    getAggregates: () => aggregates,
+    getTeamGamesPlayed: () => teamGamesPlayed,
+    teams: league.teams,
+    playerIndex,
+  });
+
+  globalThis.addEventListener('keydown', (ev) => {
+    // Tab and M open/close the menu.
+    if (ev.key === 'Tab' || ev.key === 'm' || ev.key === 'M') {
+      menu.toggle();
+      ev.preventDefault();
+    } else if (ev.key === 'Escape' && menu.isOpen()) {
+      menu.close();
+      ev.preventDefault();
+    } else if (menu.isOpen() && /^[1-5]$/.test(ev.key)) {
+      const views: ('league' | 'teams' | 'players' | 'live' | 'history')[] =
+        ['league', 'teams', 'players', 'live', 'history'];
+      const idx = parseInt(ev.key, 10) - 1;
+      const view = views[idx];
+      if (view) menu.setView(view);
+      ev.preventDefault();
+    }
+  });
 
   globalThis.addEventListener('resize', () => {
     sizeCanvas(canvas);
