@@ -9,6 +9,9 @@ export {
   DEFAULT_TICKS_PER_SECOND,
   type RenderLoopHandle,
   type RenderLoopOptions,
+  type ActiveGame,
+  type TeamStanding,
+  type ChannelInfo,
 } from './loop.js';
 export { computeTransform, worldToScreen, type FieldTransform } from './transform.js';
 export {

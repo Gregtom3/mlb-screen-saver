@@ -1,21 +1,26 @@
 import { generateInitialLeague } from '../content/index.js';
 import { buildSchedule, buildLineup } from '../season/index.js';
 import { runGame } from '../sim/index.js';
-import type { GameInput, SideInput } from '../sim/types.js';
+import type { GameInput, SideInput, SimEvent } from '../sim/types.js';
+import type { Player, PlayerId, Stadium, Team, TeamId } from '../world/types.js';
 import {
   createRenderLoop,
   DEFAULT_TICKS_PER_SECOND,
+  type ActiveGame,
   type RenderLoopHandle,
+  type TeamStanding,
   type SceneContext,
 } from '../render/index.js';
 
-// Phase 2 browser entry. Generates the league, picks one game from day 1,
-// runs the sim once, and hands the event log to the render loop.
+// Phase 3 browser entry. Pre-simulates a few days of games so we have
+// standings, then puts day N+1 on screen as 8 simultaneous "channels".
+// Left/right arrows cycle channels. Number keys 1–8 jump directly.
 
 const QS = new URLSearchParams(globalThis.location?.search ?? '');
 const SEED = QS.get('seed') ? parseSeed(QS.get('seed')!) : 0xba_5e_ba_11;
-const DAY = QS.get('day') ? parseInt(QS.get('day')!, 10) : 1;
-const GAME = QS.get('game') ? parseInt(QS.get('game')!, 10) : 1;
+const HISTORY_DAYS = QS.get('history') ? parseInt(QS.get('history')!, 10) : 4;
+const LIVE_DAY = QS.get('day') ? parseInt(QS.get('day')!, 10) : HISTORY_DAYS + 1;
+const INITIAL_GAME = QS.get('game') ? parseInt(QS.get('game')!, 10) - 1 : 0;
 
 const SPEED_PRESETS = [
   { label: '0.5×', tps: DEFAULT_TICKS_PER_SECOND * 0.5 },
@@ -56,7 +61,6 @@ const blendColors = (foreground: string, background: string, towardBg: number): 
 };
 
 const sizeCanvas = (canvas: HTMLCanvasElement) => {
-  // Match canvas backing-store size to its CSS pixel size for crisp rendering.
   const rect = canvas.getBoundingClientRect();
   const dpr = Math.min(2, globalThis.devicePixelRatio || 1);
   const width = Math.max(640, Math.floor(rect.width * dpr));
@@ -67,7 +71,65 @@ const sizeCanvas = (canvas: HTMLCanvasElement) => {
   }
 };
 
-const setupControls = (handle: RenderLoopHandle) => {
+interface LiveGame extends ActiveGame {
+  readonly entry: { homeTeamId: TeamId; awayTeamId: TeamId };
+}
+
+const buildGameInput = (
+  league: ReturnType<typeof generateInitialLeague>,
+  entry: { gameId: string; homeTeamId: TeamId; awayTeamId: TeamId; stadiumId: string; day: number },
+  seed: number,
+): { input: GameInput; home: Team; away: Team; stadium: Stadium } => {
+  const home = league.teams.find((t) => t.id === entry.homeTeamId)!;
+  const away = league.teams.find((t) => t.id === entry.awayTeamId)!;
+  const stadium = league.stadiums.find((s) => s.id === entry.stadiumId)!;
+  const homeLineup = buildLineup(home, league.players, entry.day);
+  const awayLineup = buildLineup(away, league.players, entry.day);
+  const playerIndex = new Map(league.players.map((p) => [p.id, p]));
+  const homeSide: SideInput = {
+    teamId: home.id,
+    battingOrder: homeLineup.battingOrder,
+    startingPitcherId: homeLineup.startingPitcher,
+    bullpen: homeLineup.bullpen,
+  };
+  const awaySide: SideInput = {
+    teamId: away.id,
+    battingOrder: awayLineup.battingOrder,
+    startingPitcherId: awayLineup.startingPitcher,
+    bullpen: awayLineup.bullpen,
+  };
+  const input: GameInput = {
+    gameId: entry.gameId,
+    stadiumId: entry.stadiumId,
+    home: homeSide,
+    away: awaySide,
+    playerIndex,
+    seed: seed ^ fnv(entry.gameId),
+  };
+  return { input, home, away, stadium };
+};
+
+const buildSceneCtxFor = (
+  league: ReturnType<typeof generateInitialLeague>,
+  input: GameInput,
+  homeTeam: Team,
+  stadium: Stadium,
+): SceneContext => {
+  const teamColors = new Map(
+    league.teams.map((t) => [t.id, { primary: t.colors.primary, secondary: t.colors.secondary, accent: t.colors.accent }]),
+  );
+  const teamAbbr = new Map(league.teams.map((t) => [t.id, t.abbr]));
+  return {
+    input,
+    teamColors,
+    teamAbbr,
+    stadiumName: stadium.name,
+    grassShade: stadium.atmosphere.grassShade,
+    skyColor: blendColors(homeTeam.colors.primary, '#0b0d10', 0.78),
+  };
+};
+
+const setupControls = (handle: RenderLoopHandle, channelLabel: HTMLElement | null, getChannelText: () => string) => {
   const playPauseBtn = document.getElementById('play-pause') as HTMLButtonElement | null;
   const speedSelect = document.getElementById('speed') as HTMLSelectElement | null;
 
@@ -96,6 +158,14 @@ const setupControls = (handle: RenderLoopHandle) => {
       handle.setSpeed(tps);
     });
   }
+
+  if (channelLabel) {
+    const refresh = () => {
+      channelLabel.textContent = getChannelText();
+    };
+    refresh();
+    setInterval(refresh, 500);
+  }
 };
 
 const main = () => {
@@ -108,69 +178,89 @@ const main = () => {
 
   const league = generateInitialLeague(SEED);
   const schedule = buildSchedule(league.teams, league.season.year);
-  const dayEntries = schedule.entries.filter((e) => e.day === DAY);
-  const entry = dayEntries[GAME - 1];
-  if (!entry) {
-    console.error(`No game at day ${DAY} index ${GAME}`);
+
+  // ---- Compute standings from history days (no event retention).
+  const standings = new Map<TeamId, TeamStanding>();
+  for (const team of league.teams) standings.set(team.id, { wins: 0, losses: 0 });
+  for (let day = 1; day < LIVE_DAY; day++) {
+    for (const entry of schedule.entries.filter((e) => e.day === day)) {
+      const { input } = buildGameInput(league, entry, SEED);
+      const events = runGame(input);
+      const last = events[events.length - 1];
+      if (last?.kind !== 'gameEnd') continue;
+      const homeWon = last.finalRuns.home > last.finalRuns.away;
+      const winnerId = homeWon ? entry.homeTeamId : entry.awayTeamId;
+      const loserId = homeWon ? entry.awayTeamId : entry.homeTeamId;
+      const w = standings.get(winnerId);
+      const l = standings.get(loserId);
+      if (w) standings.set(winnerId, { wins: w.wins + 1, losses: w.losses });
+      if (l) standings.set(loserId, { wins: l.wins, losses: l.losses + 1 });
+    }
+  }
+
+  // ---- Pre-simulate live-day games and keep their event logs.
+  const liveDayEntries = schedule.entries.filter((e) => e.day === LIVE_DAY);
+  if (liveDayEntries.length === 0) {
+    console.error(`No games on day ${LIVE_DAY}`);
     return;
   }
-  const homeTeam = league.teams.find((t) => t.id === entry.homeTeamId)!;
-  const awayTeam = league.teams.find((t) => t.id === entry.awayTeamId)!;
-  const stadium = league.stadiums.find((s) => s.id === entry.stadiumId)!;
+  const liveGames: LiveGame[] = liveDayEntries.map((entry) => {
+    const { input, home, stadium } = buildGameInput(league, entry, SEED);
+    const events = runGame(input);
+    const sceneCtx = buildSceneCtxFor(league, input, home, stadium);
+    return {
+      events,
+      sceneCtx,
+      entry: { homeTeamId: entry.homeTeamId, awayTeamId: entry.awayTeamId },
+    } satisfies LiveGame;
+  });
 
-  const homeLineup = buildLineup(homeTeam, league.players, DAY);
-  const awayLineup = buildLineup(awayTeam, league.players, DAY);
-  const playerIndex = new Map(league.players.map((p) => [p.id, p]));
+  let selectedIdx = Math.max(0, Math.min(liveGames.length - 1, INITIAL_GAME));
 
-  const home: SideInput = {
-    teamId: homeTeam.id,
-    battingOrder: homeLineup.battingOrder,
-    startingPitcherId: homeLineup.startingPitcher,
-    bullpen: homeLineup.bullpen,
-  };
-  const away: SideInput = {
-    teamId: awayTeam.id,
-    battingOrder: awayLineup.battingOrder,
-    startingPitcherId: awayLineup.startingPitcher,
-    bullpen: awayLineup.bullpen,
-  };
-
-  const input: GameInput = {
-    gameId: entry.gameId,
-    stadiumId: entry.stadiumId,
-    home,
-    away,
-    playerIndex,
-    seed: SEED ^ fnv(entry.gameId),
+  const channelLabel = document.getElementById('channel-label');
+  const getChannelText = () => {
+    const g = liveGames[selectedIdx]!;
+    const home = league.teams.find((t) => t.id === g.entry.homeTeamId);
+    const away = league.teams.find((t) => t.id === g.entry.awayTeamId);
+    return `ch ${selectedIdx + 1}/${liveGames.length}  ·  ${away?.abbr} @ ${home?.abbr}`;
   };
 
-  const events = runGame(input);
+  const handle = createRenderLoop(canvas, liveGames[selectedIdx]!, {
+    autoStart: true,
+    getStandings: () => standings,
+    getChannelInfo: () => ({ currentIdx: selectedIdx, total: liveGames.length }),
+  });
 
-  const teamColors = new Map(
-    league.teams.map((t) => [t.id, { primary: t.colors.primary, secondary: t.colors.secondary, accent: t.colors.accent }]),
-  );
-  const teamAbbr = new Map(league.teams.map((t) => [t.id, t.abbr]));
-  // Sky tint: the home team's primary color blended with a dark base so
-  // each ballpark has a distinct ambient feel without going full daylight.
-  const homeColor = homeTeam.colors.primary;
-  const skyColor = blendColors(homeColor, '#0b0d10', 0.78);
-
-  const sceneCtx: SceneContext = {
-    input,
-    teamColors,
-    teamAbbr,
-    stadiumName: stadium.name,
-    grassShade: stadium.atmosphere.grassShade,
-    skyColor,
+  const switchChannel = (delta: number) => {
+    const next = (selectedIdx + delta + liveGames.length) % liveGames.length;
+    if (next === selectedIdx) return;
+    selectedIdx = next;
+    handle.setActiveGame(liveGames[selectedIdx]!);
+    if (channelLabel) channelLabel.textContent = getChannelText();
   };
 
-  const handle = createRenderLoop(canvas, events, sceneCtx, { autoStart: true });
-  setupControls(handle);
+  globalThis.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowRight' || ev.key === 'Right') {
+      switchChannel(+1);
+      ev.preventDefault();
+    } else if (ev.key === 'ArrowLeft' || ev.key === 'Left') {
+      switchChannel(-1);
+      ev.preventDefault();
+    } else if (/^[1-9]$/.test(ev.key)) {
+      const target = parseInt(ev.key, 10) - 1;
+      if (target < liveGames.length) {
+        selectedIdx = target;
+        handle.setActiveGame(liveGames[selectedIdx]!);
+        if (channelLabel) channelLabel.textContent = getChannelText();
+      }
+    }
+  });
 
-  // Resize handling — debounce-light is fine for a screensaver.
+  setupControls(handle, channelLabel, getChannelText);
+
   globalThis.addEventListener('resize', () => {
     sizeCanvas(canvas);
-    handle.jumpTo(handle.currentSimTime()); // force a redraw at the new size
+    handle.redraw();
   });
 };
 

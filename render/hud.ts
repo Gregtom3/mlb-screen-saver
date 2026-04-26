@@ -1,6 +1,23 @@
 import type { SceneState } from './types.js';
 import type { FieldTransform } from './transform.js';
-import type { Player, PlayerId } from '../world/types.js';
+import type { Player, PlayerId, TeamId } from '../world/types.js';
+
+interface TeamStanding {
+  readonly wins: number;
+  readonly losses: number;
+}
+
+interface ChannelInfo {
+  readonly currentIdx: number;
+  readonly total: number;
+}
+
+export interface HudExtras {
+  readonly standings?: ReadonlyMap<TeamId, TeamStanding>;
+  readonly channel?: ChannelInfo;
+  readonly teamColors: ReadonlyMap<TeamId, { primary: string; secondary: string; accent: string }>;
+  readonly teamAbbr: ReadonlyMap<TeamId, string>;
+}
 
 // HUD overhaul per docs/visual_polish_001.md Section 3.
 //
@@ -11,7 +28,9 @@ import type { Player, PlayerId } from '../world/types.js';
 //   Bottom-left batter card (~96×240) — name, position, current-game line.
 //   Bottom-right line-score box — innings 1-9 + R/H/E.
 
+export const STANDINGS_HEIGHT = 22;
 export const SCOREBUG_HEIGHT = 70;
+export const TOP_HUD_HEIGHT = STANDINGS_HEIGHT + SCOREBUG_HEIGHT;
 const TIER_1_H = 40;
 const TIER_2_H = SCOREBUG_HEIGHT - TIER_1_H;
 
@@ -54,36 +73,88 @@ export const drawHud = (
   scene: SceneState,
   teams: { away: TeamBugInfo; home: TeamBugInfo },
   playerIndex: ReadonlyMap<PlayerId, Player>,
+  extras: HudExtras = { teamColors: new Map(), teamAbbr: new Map() },
 ): void => {
-  // Top scorebug.
+  // Standings strip across the very top.
+  drawStandingsStrip(ctx, t, extras);
+
+  // Top scorebug below standings.
+  const sbY = STANDINGS_HEIGHT;
   ctx.fillStyle = COLOR_BG;
-  ctx.fillRect(0, 0, t.canvasWidth, TIER_1_H);
+  ctx.fillRect(0, sbY, t.canvasWidth, TIER_1_H);
   ctx.fillStyle = COLOR_BG_TIER2;
-  ctx.fillRect(0, TIER_1_H, t.canvasWidth, TIER_2_H);
+  ctx.fillRect(0, sbY + TIER_1_H, t.canvasWidth, TIER_2_H);
   ctx.fillStyle = COLOR_DIVIDER;
-  ctx.fillRect(0, SCOREBUG_HEIGHT - 1, t.canvasWidth, 1);
+  ctx.fillRect(0, sbY + SCOREBUG_HEIGHT - 1, t.canvasWidth, 1);
 
-  // Tier 1 — team blocks left and right, stadium + inning stacked center.
-  drawTeamBlock(ctx, 0, 0, TIER_1_H, teams.away, 'left');
-  drawTeamBlock(ctx, t.canvasWidth - 168, 0, TIER_1_H, teams.home, 'right');
-  drawInningPanel(ctx, t.canvasWidth / 2, TIER_1_H / 2, scene);
+  drawTeamBlock(ctx, 0, sbY, TIER_1_H, teams.away, 'left');
+  drawTeamBlock(ctx, t.canvasWidth - 168, sbY, TIER_1_H, teams.home, 'right');
+  drawInningPanel(ctx, t.canvasWidth / 2, sbY + TIER_1_H / 2, scene, extras.channel);
 
-  // Tier 2 — count, outs, bases, last-play ticker.
   let cursor = 16;
-  cursor = drawCount(ctx, cursor, TIER_1_H + TIER_2_H / 2, scene);
-  cursor = drawOuts(ctx, cursor + 22, TIER_1_H + TIER_2_H / 2, scene);
-  cursor = drawBases(ctx, cursor + 22, TIER_1_H + TIER_2_H / 2, scene);
-  drawLastPlay(ctx, cursor + 18, t.canvasWidth - 12, TIER_1_H + TIER_2_H / 2, scene);
+  cursor = drawCount(ctx, cursor, sbY + TIER_1_H + TIER_2_H / 2, scene);
+  cursor = drawOuts(ctx, cursor + 22, sbY + TIER_1_H + TIER_2_H / 2, scene);
+  cursor = drawBases(ctx, cursor + 22, sbY + TIER_1_H + TIER_2_H / 2, scene);
+  drawLastPlay(ctx, cursor + 18, t.canvasWidth - 12, sbY + TIER_1_H + TIER_2_H / 2, scene);
 
-  // Bottom panels.
   drawBatterCard(ctx, t, scene, playerIndex, teams);
   drawLineScore(ctx, t, scene, teams);
 
-  // Big-play screen flash + popup, layered over the field.
   drawScreenFlash(ctx, t, scene);
   drawBigPlayPopup(ctx, t, scene);
 
   if (scene.phase === 'final') drawFinalBanner(ctx, t, scene, teams);
+};
+
+// =================================================== standings strip =====
+
+const drawStandingsStrip = (
+  ctx: CanvasRenderingContext2D,
+  t: FieldTransform,
+  extras: HudExtras,
+): void => {
+  ctx.fillStyle = '#0a0c10';
+  ctx.fillRect(0, 0, t.canvasWidth, STANDINGS_HEIGHT);
+  ctx.fillStyle = '#1d2129';
+  ctx.fillRect(0, STANDINGS_HEIGHT - 1, t.canvasWidth, 1);
+
+  const standings = extras.standings;
+  if (!standings || standings.size === 0) {
+    ctx.font = FONT_LABEL;
+    ctx.fillStyle = COLOR_DIM;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('standings — opening day', 12, STANDINGS_HEIGHT / 2);
+    return;
+  }
+
+  // Sort: best W-L first.
+  const rows = [...standings.entries()]
+    .map(([teamId, s]) => ({ teamId, ...s }))
+    .sort((a, b) => {
+      if (b.wins !== a.wins) return b.wins - a.wins;
+      return a.losses - b.losses;
+    });
+
+  const colW = (t.canvasWidth - 16) / rows.length;
+  ctx.font = 'bold 11px ui-monospace, "JetBrains Mono", monospace';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    const x = 8 + i * colW;
+    const colors = extras.teamColors.get(row.teamId);
+    const abbr = extras.teamAbbr.get(row.teamId) ?? row.teamId;
+    if (colors) {
+      ctx.fillStyle = colors.primary;
+      ctx.fillRect(x, 4, 4, STANDINGS_HEIGHT - 8);
+    }
+    ctx.fillStyle = COLOR_TEXT;
+    ctx.textAlign = 'left';
+    ctx.fillText(abbr, x + 8, STANDINGS_HEIGHT / 2);
+    ctx.fillStyle = COLOR_DIM;
+    ctx.textAlign = 'right';
+    ctx.fillText(`${row.wins}-${row.losses}`, x + colW - 4, STANDINGS_HEIGHT / 2);
+  }
 };
 
 // ============================================================ big play ===
@@ -220,13 +291,17 @@ const drawInningPanel = (
   cx: number,
   cy: number,
   scene: SceneState,
+  channel?: ChannelInfo,
 ): void => {
-  // Stadium name first, stacked above the inning indicator. Both centered.
+  // Stadium name + (optional) channel indicator, then inning.
+  const topLine = channel
+    ? `${scene.stadiumName} · ch ${channel.currentIdx + 1}/${channel.total}`
+    : scene.stadiumName;
   ctx.font = FONT_LABEL;
   ctx.fillStyle = COLOR_DIM;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(scene.stadiumName, cx, cy - 11);
+  ctx.fillText(topLine, cx, cy - 11);
   if (scene.phase === 'pre-game') return;
   const half = scene.half === 'top' ? '▲ TOP' : '▼ BOT';
   ctx.font = FONT_INNING;

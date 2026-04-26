@@ -1,5 +1,5 @@
 import type { FieldPoint } from './types.js';
-import { SCOREBUG_HEIGHT } from './hud.js';
+import { TOP_HUD_HEIGHT } from './hud.js';
 
 // Maps field coordinates (feet, home plate at origin, +Y toward outfield)
 // to canvas pixels. The renderer asks for a transform once per frame given
@@ -17,7 +17,7 @@ const TARGET_FOUL_FT = 240; // half of the lateral spread we want visible
 const HOME_BOTTOM_MARGIN = 110; // px below home plate, leaves room for catcher + bottom HUD panels
 
 export const computeTransform = (canvasWidth: number, canvasHeight: number): FieldTransform => {
-  const fieldTop = SCOREBUG_HEIGHT + 10; // small breathing room below the bug
+  const fieldTop = TOP_HUD_HEIGHT + 10; // small breathing room below the bug
   const fieldBottom = canvasHeight - HOME_BOTTOM_MARGIN;
   const usableHeight = Math.max(100, fieldBottom - fieldTop);
   const usableWidth = canvasWidth * 0.95;
