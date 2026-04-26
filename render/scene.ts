@@ -46,7 +46,17 @@ interface RunnerLatest {
   readonly to: 0 | 1 | 2 | 3;
   readonly out: boolean;
   readonly t: number;
+  readonly perBaseTicks: number;
 }
+
+// How long an out runner lingers — walking off toward the dugout — after
+// they reach the base where they were retired. Long enough to read clearly,
+// short enough to clear before the next pitch.
+const WALK_OFF_TICKS = 24;
+// Two stylized dugouts — runners head to the side closer to where they
+// were retired (1B-side for righty grounders, 3B-side for lefty / triples).
+const DUGOUT_RIGHT: FieldPoint = { x: 75, y: -22 };
+const DUGOUT_LEFT: FieldPoint = { x: -75, y: -22 };
 
 interface SceneContext {
   readonly input: GameInput;
@@ -79,31 +89,46 @@ interface RunnerRender {
 }
 
 const computeRunnerRender = (latest: RunnerLatest, simTime: number, runnerId: PlayerId): RunnerRender => {
-  if (latest.out) {
-    // Phase 2: thrown-out runners disappear instantly. Future polish: linger
-    // briefly between bases as a "tagged out" sprite.
-    return { runnerId, position: baseFor(latest.from), stillVisible: false };
-  }
   const path = basePath(latest.from, latest.to);
-  const totalDuration = (path.length - 1) * RUNNER_TRAVEL_TICKS_PER_BASE;
+  const segmentLen = latest.perBaseTicks;
+  const totalDuration = (path.length - 1) * segmentLen;
   const elapsed = simTime - latest.t;
-  if (totalDuration <= 0 || elapsed >= totalDuration) {
-    // Runner has fully arrived. Scoring (to=0) means they leave the field of view.
-    if (latest.to === 0) return { runnerId, position: HOME_PLATE, stillVisible: false };
-    return { runnerId, position: baseFor(latest.to), stillVisible: true };
-  }
+
+  // Pre-motion: runner waiting at `from`.
   if (elapsed <= 0) {
     return { runnerId, position: baseFor(latest.from), stillVisible: true };
   }
-  const segmentLen = RUNNER_TRAVEL_TICKS_PER_BASE;
-  const segIdx = Math.floor(elapsed / segmentLen);
-  const segLocal = (elapsed % segmentLen) / segmentLen;
-  const a = path[segIdx];
-  const b = path[segIdx + 1];
-  if (a === undefined || b === undefined) {
-    return { runnerId, position: baseFor(latest.to), stillVisible: latest.to !== 0 };
+
+  // Mid-run: lerp along the path. Out runners run too — they don't stop
+  // mid-stride knowing they'll be retired. They reach the bag, then walk off.
+  if (elapsed < totalDuration) {
+    const segIdx = Math.floor(elapsed / segmentLen);
+    const segLocal = (elapsed % segmentLen) / segmentLen;
+    const a = path[segIdx];
+    const b = path[segIdx + 1];
+    if (a === undefined || b === undefined) {
+      return { runnerId, position: baseFor(latest.to), stillVisible: true };
+    }
+    return { runnerId, position: lerpPoint(baseFor(a), baseFor(b), segLocal), stillVisible: true };
   }
-  return { runnerId, position: lerpPoint(baseFor(a), baseFor(b), segLocal), stillVisible: true };
+
+  // Arrived at `to`.
+  const postArrival = elapsed - totalDuration;
+  const arrivedAt = baseFor(latest.to);
+
+  if (latest.out) {
+    // Walk off slowly toward the nearest dugout. Disappear after the walk-off.
+    if (postArrival >= WALK_OFF_TICKS) {
+      return { runnerId, position: arrivedAt, stillVisible: false };
+    }
+    const frac = postArrival / WALK_OFF_TICKS;
+    const dugout = arrivedAt.x >= 0 ? DUGOUT_RIGHT : DUGOUT_LEFT;
+    return { runnerId, position: lerpPoint(arrivedAt, dugout, frac), stillVisible: true };
+  }
+
+  // Safe — stays at base. Scoring runners leave the field.
+  if (latest.to === 0) return { runnerId, position: HOME_PLATE, stillVisible: false };
+  return { runnerId, position: arrivedAt, stillVisible: true };
 };
 
 const describeOutcome = (outcome: AtBatOutcome, batterName: string): string => {
@@ -207,12 +232,20 @@ export const buildScene = (
         break;
       }
       case 'baserunner': {
-        // Use choreo override start-time if available — handles tag-ups
-        // (sac fly waits for catch) and play-aware runner pacing.
+        // Use choreo override start-time + per-base pace if available —
+        // handles sac-fly tag-ups and pace-matches force-out runners to the
+        // throw arrival so the "out" reads correctly.
         const choreo = lastContactT !== null ? choreos.get(lastContactT) : undefined;
         const override = choreo?.runnerOverrides.get(ev.runnerId);
         const startT = override?.startT ?? ev.t;
-        runnerLatest.set(ev.runnerId, { from: ev.from, to: ev.to, out: ev.out, t: startT });
+        const perBaseTicks = override?.perBaseTicks ?? RUNNER_TRAVEL_TICKS_PER_BASE;
+        runnerLatest.set(ev.runnerId, {
+          from: ev.from,
+          to: ev.to,
+          out: ev.out,
+          t: startT,
+          perBaseTicks,
+        });
         // Update base occupancy: vacate `from`, occupy `to` (unless out or scoring).
         if (ev.from === 1) bases.first = null;
         else if (ev.from === 2) bases.second = null;

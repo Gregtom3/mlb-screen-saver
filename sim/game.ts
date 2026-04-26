@@ -328,9 +328,15 @@ const simulateInPlay = (
     ) {
       outcome = 'sac-fly';
     }
-    // Double play: <2 outs, runner on 1st, on a grounder.
-    if (outs < 2 && bases.first && outcome === 'groundout' && rng.next() < 0.32) {
-      outcome = 'double-play';
+    // Force-play escalation: <2 outs, runner on 1st, on a grounder. The
+    // defense will almost always try the force at 2B — outcome is either a
+    // double play, a fielder's choice (lead runner out, batter safe), or
+    // (rarely) a beat-the-force grounder where everyone holds.
+    if (outs < 2 && bases.first && outcome === 'groundout') {
+      const r = rng.next();
+      if (r < 0.55) outcome = 'double-play';
+      else if (r < 0.88) outcome = 'fielders-choice';
+      // else stays as groundout — defense couldn't get the force.
     }
   }
 

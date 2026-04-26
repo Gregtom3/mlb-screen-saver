@@ -348,16 +348,36 @@ const buildOneChoreo = (
     returnEndT: pickupEndT + 4 + FIELDER_RETURN_TICKS,
   });
 
-  // Per-runner timing overrides.
+  // Per-runner timing overrides. Out runners get a slower pace so their
+  // arrival roughly coincides with the throw (otherwise they'd look obviously
+  // safe and the "out" wouldn't read). Safe runners use a brisker default.
   const runnerOverrides = new Map<
     PlayerId,
     { startT: number; perBaseTicks: number }
   >();
+  // Throw arrival timing — used to pace out runners so they reach the bag
+  // about when the ball does.
+  const firstThrowArrival = pickupEndT + THROW_TICKS; // when ball arrives at first throw target
+  const relayArrival = firstThrowArrival + RELAY_TICKS; // DP back-end
+  const SAFE_PER_BASE = 9;
   for (const ev of baserunnerEvents) {
     let startT = contactT;
-    const perBaseTicks = 7;
+    let perBaseTicks = SAFE_PER_BASE;
     if (outcome === 'sac-fly' && ev.from === 3 && ev.to === 0) {
       startT = flightEndT;
+    }
+    if (ev.out) {
+      // Pace this runner so they "arrive" at their out base around the time
+      // the relevant throw arrives. For DP back end (batter to 1B), the
+      // relevant throw is the relay; for the lead force at 2B, it's the
+      // first throw.
+      const baseDistance = Math.max(1, Math.abs(ev.to - ev.from));
+      const targetArrivalT =
+        outcome === 'double-play' && ev.from === 0
+          ? relayArrival
+          : firstThrowArrival;
+      const totalDuration = Math.max(SAFE_PER_BASE, targetArrivalT - startT);
+      perBaseTicks = Math.round(totalDuration / baseDistance);
     }
     runnerOverrides.set(ev.runnerId, { startT, perBaseTicks });
   }
