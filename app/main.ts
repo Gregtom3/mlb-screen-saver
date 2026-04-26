@@ -15,6 +15,12 @@ import { mountMenu, type LiveGameSummary } from '../ui/index.js';
 import { buildSeasonAggregates, type FinishedGame, type SeasonAggregates } from '../stats/index.js';
 import { buildProjections } from '../projections/index.js';
 import type { ProjectionSet } from '../projections/types.js';
+import {
+  createSfxDispatcher,
+  ensureAudio,
+  setMuted,
+  isMuted,
+} from '../audio/index.js';
 
 // Phase 3+ browser entry. Pre-simulates a few days of games for standings,
 // then puts day N+1 on screen as 8 simultaneous "channels". Phase 5.5 adds
@@ -132,6 +138,30 @@ const buildSceneCtxFor = (
     grassShade: stadium.atmosphere.grassShade,
     skyColor: blendColors(homeTeam.colors.primary, '#0b0d10', 0.78),
   };
+};
+
+const setupAudioToggle = (sfx: { setEnabled(b: boolean): void; isEnabled(): boolean }) => {
+  // Default the screensaver to muted per project brief — sound is opt-in. The
+  // first toggle click both unlocks the AudioContext (which requires a user
+  // gesture) and unmutes; subsequent clicks just flip mute on the bus.
+  setMuted(true);
+  const btn = document.getElementById('audio-toggle') as HTMLButtonElement | null;
+  if (!btn) return;
+  const refreshLabel = () => {
+    btn.textContent = isMuted() ? '🔇 audio' : '🔊 audio';
+  };
+  refreshLabel();
+  btn.addEventListener('click', () => {
+    if (!sfx.isEnabled()) {
+      // First click — unlock the AudioContext and switch on dispatch.
+      ensureAudio();
+      setMuted(false);
+      sfx.setEnabled(true);
+    } else {
+      setMuted(!isMuted());
+    }
+    refreshLabel();
+  });
 };
 
 const setupControls = (handle: RenderLoopHandle, channelLabel: HTMLElement | null, getChannelText: () => string) => {
@@ -254,11 +284,19 @@ const main = () => {
     return `ch ${selectedIdx + 1}/${liveGames.length}  ·  ${away?.abbr} @ ${home?.abbr}`;
   };
 
+  // Audio dispatcher: stays inert until the user clicks the audio toggle (a
+  // user gesture is required to start the AudioContext). Once unlocked it
+  // stays enabled; mute is toggled separately on the bus.
+  const sfx = createSfxDispatcher();
+
   const handle = createRenderLoop(canvas, liveGames[selectedIdx]!, {
     autoStart: true,
     getStandings: () => standings,
     getChannelInfo: () => ({ currentIdx: selectedIdx, total: liveGames.length }),
+    onEvents: (events) => sfx.dispatch(events),
   });
+
+  setupAudioToggle(sfx);
 
   const switchChannel = (delta: number) => {
     const next = (selectedIdx + delta + liveGames.length) % liveGames.length;

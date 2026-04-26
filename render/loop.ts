@@ -48,6 +48,14 @@ export interface RenderLoopOptions {
   readonly getStandings?: () => ReadonlyMap<TeamId, TeamStanding>;
   /** Optional channel info provider — drawn next to the scoreboard. */
   readonly getChannelInfo?: () => ChannelInfo;
+  /**
+   * Called each frame with the events whose `t` just crossed the playback
+   * cursor (in chronological order). Lets downstream systems (audio, news
+   * ticker, etc.) react to the live stream without driving their own loop.
+   * On `setActiveGame` and `jumpTo` the cursor jumps with `simTime` — past
+   * events from the new state are not replayed.
+   */
+  readonly onEvents?: (events: readonly SimEvent[]) => void;
 }
 
 export const createRenderLoop = (
@@ -64,10 +72,45 @@ export const createRenderLoop = (
   let lastFrameMs: number | null = null;
   let rafId: number | null = null;
   let playing = false;
+  // Index of the next event in `game.events` to consider for dispatch. Events
+  // before this index have already been emitted (or skipped because they sat
+  // before the cursor when we joined the game).
+  let eventIdx = 0;
 
   const finalT = (g: ActiveGame): number => {
     const last = g.events[g.events.length - 1];
     return last ? last.t + 60 : 0;
+  };
+
+  // Smallest index in `g.events` whose `.t` is strictly greater than `t`.
+  // Used to re-anchor the cursor after a channel swap or jump so we don't
+  // replay the past.
+  const findIdxAfter = (g: ActiveGame, t: number): number => {
+    let lo = 0;
+    let hi = g.events.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (g.events[mid]!.t > t) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo;
+  };
+
+  const dispatchDueEvents = () => {
+    if (!options.onEvents) {
+      // Still advance the index so a later subscription picks up from "now"
+      // rather than replaying the whole game.
+      while (eventIdx < game.events.length && game.events[eventIdx]!.t <= simTime) {
+        eventIdx++;
+      }
+      return;
+    }
+    const batch: SimEvent[] = [];
+    while (eventIdx < game.events.length && game.events[eventIdx]!.t <= simTime) {
+      batch.push(game.events[eventIdx]!);
+      eventIdx++;
+    }
+    if (batch.length > 0) options.onEvents(batch);
   };
 
   const teamBugInfo = (id: TeamId, score: number) => {
@@ -115,6 +158,7 @@ export const createRenderLoop = (
     const dt = lastFrameMs === null ? 0 : (now - lastFrameMs) / 1000;
     lastFrameMs = now;
     simTime = Math.min(finalT(game), simTime + dt * ticksPerSecond);
+    dispatchDueEvents();
     draw();
     if (simTime >= finalT(game)) {
       // Don't stop the loop — user might switch to a still-playing game.
@@ -140,12 +184,16 @@ export const createRenderLoop = (
     speed() { return ticksPerSecond; },
     jumpTo(t: number) {
       simTime = Math.max(0, Math.min(finalT(game), t));
+      eventIdx = findIdxAfter(game, simTime);
       draw();
     },
     currentSimTime() { return simTime; },
     isFinished() { return simTime >= finalT(game); },
     setActiveGame(newGame: ActiveGame) {
       game = newGame;
+      // Re-anchor the cursor so we don't fire SFX for events that happened
+      // before we tuned in to this channel.
+      eventIdx = findIdxAfter(game, simTime);
       draw();
     },
     redraw() { draw(); },
