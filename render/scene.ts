@@ -11,6 +11,7 @@ import type {
   BatterCardStats,
   BigPlayInfo,
   FieldPoint,
+  RunScoredPopup,
   SceneLineScore,
   ScenePlayer,
   SceneState,
@@ -61,6 +62,10 @@ interface RunnerLatest {
 // they reach the base where they were retired. Long enough to read clearly,
 // short enough to clear before the next pitch.
 const WALK_OFF_TICKS = 24;
+// Lifetime of the "+1" run-scored popup at home plate. Slightly longer
+// than the big-play popup so a stack of multiple runs (grand slam) all
+// get to float up and fade before the next pitch lands.
+const RUN_SCORED_POPUP_TICKS = 18;
 // Two stylized dugouts — runners head to the side closer to where they
 // were retired (1B-side for righty grounders, 3B-side for lefty / triples).
 const DUGOUT_RIGHT: FieldPoint = { x: 75, y: -22 };
@@ -225,6 +230,7 @@ export const buildScene = (
   let lastContact: ContactInProgress | null = null;
   let lastContactT: number | null = null; // for choreo lookup
   let lastBigPlay: BigPlayInfo | null = null;
+  const runsScoredPopups: RunScoredPopup[] = [];
 
   for (const ev of events) {
     if (ev.t > simTime) break;
@@ -277,6 +283,14 @@ export const buildScene = (
           else if (ev.to === 0) {
             if (half === 'top') scoreAway += 1;
             else scoreHome += 1;
+            // Stack multiple runs scoring at the same simTime (e.g. grand
+            // slam) so the HUD can float them up at separate heights.
+            let stackIndex = 0;
+            for (let i = runsScoredPopups.length - 1; i >= 0; i--) {
+              if (runsScoredPopups[i]!.firedAtT === ev.t) stackIndex += 1;
+              else break;
+            }
+            runsScoredPopups.push({ firedAtT: ev.t, stackIndex });
           }
         }
         break;
@@ -543,6 +557,10 @@ export const buildScene = (
     onDeckBatterId,
     lineScore,
     lastBigPlay,
+    recentRunsScored: runsScoredPopups.filter((r) => {
+      const age = simTime - r.firedAtT;
+      return age >= 0 && age <= RUN_SCORED_POPUP_TICKS;
+    }),
     simTime,
   };
 };

@@ -34,6 +34,14 @@ export interface BigPlayInfo {
   readonly teamColor: string;
 }
 
+// Transient "+1" popup at home plate when a runner scores. Multiple runs
+// can fire at the same simTime (e.g. grand slam scores 4 with one t);
+// stackIndex offsets each popup vertically so they don't overlap.
+export interface RunScoredPopup {
+  readonly firedAtT: number;
+  readonly stackIndex: number;
+}
+
 // Field coordinate system:
 //   - Origin (0, 0) at home plate.
 //   - +X toward 1st base (right).
@@ -111,6 +119,9 @@ export interface SceneState {
   readonly onDeckBatterId: PlayerId | null;
   readonly lineScore: SceneLineScore;
   readonly lastBigPlay: BigPlayInfo | null;
+  // Active "+1" run-scored popups. Filtered to entries within the popup
+  // lifetime so the HUD can iterate and draw without further bookkeeping.
+  readonly recentRunsScored: readonly RunScoredPopup[];
   // The simTime at which this scene was built — lets the HUD compute
   // event ages for transient effects (popup pop, screen-edge flash).
   readonly simTime: number;

@@ -105,6 +105,7 @@ export const drawHud = (
 
   drawScreenFlash(ctx, t, scene);
   drawBigPlayPopup(ctx, t, scene);
+  drawRunScoredPopups(ctx, t, scene);
 
   if (scene.phase === 'final') drawFinalBanner(ctx, t, scene, teams);
 };
@@ -213,6 +214,49 @@ const drawBigPlayPopup = (
   ctx.strokeText(big.label, cx, cy);
   ctx.fillStyle = big.teamColor;
   ctx.fillText(big.label, cx, cy);
+  ctx.restore();
+};
+
+// "+1" green popup at home plate when a runner scores. Mirrors the
+// big-play popup pattern (age-driven scale/alpha) but anchors to the
+// field instead of the screen, and stacks vertically when multiple
+// runs cross home on the same play.
+const RUN_SCORED_DURATION_TICKS = 18;
+const RUN_SCORED_FONT_SIZE = 30;
+const RUN_SCORED_GREEN = '#3ddc6a';
+
+const drawRunScoredPopups = (
+  ctx: CanvasRenderingContext2D,
+  t: FieldTransform,
+  scene: SceneState,
+): void => {
+  if (scene.recentRunsScored.length === 0) return;
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const popup of scene.recentRunsScored) {
+    const age = scene.simTime - popup.firedAtT;
+    if (age < 0 || age > RUN_SCORED_DURATION_TICKS) continue;
+    const frac = age / RUN_SCORED_DURATION_TICKS;
+    // Pop in (overshoot), then float upward and fade out.
+    let scale: number;
+    if (frac < 0.18) scale = 0.5 + (frac / 0.18) * 0.85; // 0.5 → 1.35
+    else if (frac < 0.32) scale = 1.35 - ((frac - 0.18) / 0.14) * 0.35; // 1.35 → 1
+    else scale = 1;
+    const alpha = frac < 0.12 ? frac / 0.12 : Math.max(0, 1 - Math.max(0, frac - 0.55) / 0.45);
+    const driftPx = 56 * frac;
+    const stackPx = popup.stackIndex * 30;
+    const fontSize = Math.round(RUN_SCORED_FONT_SIZE * scale);
+    const x = t.homePlateScreen.x;
+    const y = t.homePlateScreen.y - 28 - stackPx - driftPx;
+    ctx.globalAlpha = alpha;
+    ctx.font = `bold ${fontSize}px ui-monospace, "JetBrains Mono", monospace`;
+    ctx.lineWidth = Math.max(2, fontSize * 0.12);
+    ctx.strokeStyle = '#0c0d10';
+    ctx.strokeText('+1', x, y);
+    ctx.fillStyle = RUN_SCORED_GREEN;
+    ctx.fillText('+1', x, y);
+  }
   ctx.restore();
 };
 
