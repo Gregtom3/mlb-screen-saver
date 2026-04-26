@@ -392,19 +392,31 @@ export const buildScene = (
     });
   }
 
-  // Batter sprite at the box. Handedness drives which side of the plate:
-  // a left-handed batter stands on the 1B side (positive x), right-handed
-  // on the 3B side (negative x). Switch hitters chosen randomly per AB
-  // would be nicer but use 'R' as the default for now.
+  // Batter sprite at the box. Handedness drives which side of the plate.
+  // swingFrac: 0..1 across each pitch, peaks ~0.65 of the way through the
+  // pitch flight so the bat "meets" the ball near the plate.
   let batterScene: ScenePlayer | null = null;
   if (batter && phase === 'live') {
     const boxX = batter.bats === 'L' ? 4.5 : -4.5;
+    let swingFrac = 0;
+    if (lastPitch) {
+      const elapsed = simTime - lastPitch.t;
+      const swingStartT = PITCH_FLIGHT_TICKS * 0.55;
+      const swingEndT = PITCH_FLIGHT_TICKS * 0.95;
+      if (elapsed > swingStartT && elapsed < swingEndT + 4) {
+        swingFrac = Math.max(
+          0,
+          Math.min(1, (elapsed - swingStartT) / (swingEndT - swingStartT)),
+        );
+      }
+    }
     batterScene = {
       id: batter.id,
       role: 'batter',
       position: { x: boxX, y: 2.5 },
       primaryColor: battingColors.primary,
       secondaryColor: battingColors.secondary,
+      swingFrac,
     };
   }
 

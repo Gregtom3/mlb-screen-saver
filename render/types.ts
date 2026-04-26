@@ -58,6 +58,10 @@ export interface ScenePlayer {
   readonly position: FieldPoint;
   readonly primaryColor: string;
   readonly secondaryColor: string;
+  // Batter only — drives the 2-frame swing sprite swap. 0 = ready stance,
+  // 1 = follow-through. Computed in the scene reducer from the most recent
+  // pitch event so the swing tracks each pitch.
+  readonly swingFrac?: number;
 }
 
 export interface SceneBall {

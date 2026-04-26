@@ -123,6 +123,45 @@ node scripts/capture-frame.mjs docs/phase-2-frame.png
 - Live play always shows 9 fielders (P + C + 7 others).
 - Bases reset to empty after every `inningEnd`.
 
+## Visual polish (post-MVP, per docs/visual_polish_001.md)
+
+- **Identity**: 12×12 pixel-art player sprites tinted by team cap +
+  jersey colors with a 1px drop shadow. Radial mow-stripe pattern across
+  the outfield (14 alternating wedges fanning from home plate). Outfield
+  grass color now reads from the stadium record's `atmosphere.grassShade`
+  per game.
+- **Field**: foul lines clip the dirt and outfield to fair territory.
+  Infield dirt is the standard 95-ft circular arc centered behind the
+  mound. Outfield wall has a 12-px concrete-gray frame band layered
+  underneath suggesting the back of the stands. Bases drawn as white
+  squares; home plate kept as a five-sided pentagon. Catcher pulled
+  behind the plate (-8 ft) and batter pushed slightly forward (+2.5 ft)
+  with handedness driving which side of the box.
+- **Scoreboard**: mirrored team blocks with color-stripe bars and tinted
+  pads; chunky bold-mono score; inning indicator stacked above the
+  stadium name; tier-2 strip with discrete ball/strike count icons,
+  outs as 8×8 squares, larger bases mini-diamond, and last-play caption.
+- **Bottom panels**: batter card (lower-left) with team-color stripe,
+  name, position, bats/throws, current-game line, and on-deck. Line
+  score box (lower-right) with innings 1-9 + R/H/E for both teams.
+- **Big plays**: every notable atBatEnd (HR/3B/2B/1B/K/DP) fires a
+  chunky outlined banner over the field for ~0.7 wall-sec with a pop-
+  in / settle / fade animation. Extra-base hits and HRs additionally
+  pulse a team-color screen-edge flash for ~0.2 wall-sec.
+- **Motion**: 2-frame batter swing — bat lerps from "ready" (cocked
+  back) to "follow-through" (forward + low) timed to land near the
+  end of each pitch flight.
+- **Atmosphere**: per-stadium sky tint derived from the home team's
+  primary color blended 78% toward the dark base, so each park has a
+  faintly distinct ambient feel.
+- **Debug**: `?debug=1` query param toggles a `RENDER_DEBUG` overlay
+  (sprite bounds, base positions, fielder zones, ball cross, simTime
+  readout). Off by default.
+
+Deferred for a later pass: pixel-font ticker animation (current caption
+is functional), full crowd ring, and a hardcoded-color audit to move
+all stadium-specific values out of `/render`.
+
 ## Next: Phase 3 — Multi-game + UI
 
 All 8 daily games run concurrently in a Web Worker. Channel-flip game

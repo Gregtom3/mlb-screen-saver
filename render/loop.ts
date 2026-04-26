@@ -3,6 +3,7 @@ import { drawField } from './field.js';
 import { drawHud } from './hud.js';
 import { buildScene, type SceneContext } from './scene.js';
 import { drawScene } from './sprites.js';
+import { drawDebugOverlay, isDebugEnabled } from './debug.js';
 import { computeTransform } from './transform.js';
 import type { TeamId } from '../world/types.js';
 
@@ -74,6 +75,7 @@ export const createRenderLoop = (
       },
       sceneCtx.input.playerIndex,
     );
+    if (isDebugEnabled()) drawDebugOverlay(ctx, transform, scene);
   };
 
   const frame = (now: number) => {

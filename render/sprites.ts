@@ -106,13 +106,23 @@ const drawPlayer = (
 
   // Role-specific accents.
   if (p.role === 'batter') {
+    // 2-frame swing: bat handle near the trailing shoulder; tip rotates
+    // from "ready" (cocked back) to "follow-through" (forward + low).
     const dir = p.position.x < 0 ? -1 : 1;
+    const swingFrac = p.swingFrac ?? 0;
+    // Ready: tip behind/up. Follow-through: tip in front/down.
+    const tipReady = { x: -dir * pixelSize * 1.5, y: -pixelSize * 7 };
+    const tipFollow = { x: dir * pixelSize * 7, y: pixelSize * 0.5 };
+    const tipX = tipReady.x + (tipFollow.x - tipReady.x) * swingFrac;
+    const tipY = tipReady.y + (tipFollow.y - tipReady.y) * swingFrac;
+    const handleX = dir * pixelSize * 1.5;
+    const handleY = -pixelSize * 1.5;
     ctx.strokeStyle = '#d6b78a';
     ctx.lineWidth = Math.max(1.5, pixelSize * 1.1);
     ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.moveTo(s.x + dir * pixelSize * 4, s.y - pixelSize * 1);
-    ctx.lineTo(s.x + dir * pixelSize * 7, s.y - pixelSize * 5);
+    ctx.moveTo(s.x + handleX, s.y + handleY);
+    ctx.lineTo(s.x + tipX, s.y + tipY);
     ctx.stroke();
   } else if (p.role === 'pitcher') {
     // Rubber strip behind the pitcher.
