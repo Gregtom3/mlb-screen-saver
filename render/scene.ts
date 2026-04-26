@@ -63,6 +63,10 @@ interface SceneContext {
   readonly teamColors: ReadonlyMap<TeamId, { primary: string; secondary: string; accent: string }>;
   readonly teamAbbr: ReadonlyMap<TeamId, string>;
   readonly stadiumName: string;
+  // Per-stadium grass shade pulled from the stadium record's atmosphere.
+  // The renderer reads this directly so Tide Park's deeper green and
+  // Glacier Hollow's chillier hue look distinct.
+  readonly grassShade: string;
 }
 
 const fielderPositionFor = (

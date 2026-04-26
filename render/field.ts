@@ -11,13 +11,32 @@ import { worldToScreen, type FieldTransform } from './transform.js';
 // per-stadium grass patterns, dimensions, and quirks via the registry.
 
 const SKY = '#0e1a26';
-const GRASS_OUTFIELD = '#3b6e3a';
-const GRASS_INFIELD = '#487a47';
+const DEFAULT_GRASS_OUTFIELD = '#3b6e3a';
 const DIRT = '#9a6a3d';
 const DIRT_DARK = '#7c4f2a';
 const WALL_LINE = '#1a1a1a';
 const FOUL_LINE = '#f3eedb';
 const BASE_FILL = '#f8f7e8';
+
+export interface FieldDrawOptions {
+  // Per-stadium grass color from the stadium record's atmosphere.grassShade.
+  // Falls back to the default field green if not provided.
+  readonly grassShade?: string;
+  // The background color outside the wall — Phase 6 atmosphere will tint this
+  // per-stadium.
+  readonly skyColor?: string;
+}
+
+// Lighten/darken an #rrggbb hex by a delta (-1..1). Used for mow stripes.
+const shiftHex = (hex: string, delta: number): string => {
+  const clean = hex.replace('#', '');
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  const adj = (c: number) => Math.max(0, Math.min(255, Math.round(c + delta * 255)));
+  const toHex = (n: number) => n.toString(16).padStart(2, '0');
+  return `#${toHex(adj(r))}${toHex(adj(g))}${toHex(adj(b))}`;
+};
 
 // Approximate outfield arc. From foul-line corners at ±45° and a target depth.
 const OUTFIELD_DEPTHS = {
@@ -50,10 +69,19 @@ const fairTerritoryPath = (ctx: CanvasRenderingContext2D, t: FieldTransform): vo
   ctx.closePath();
 };
 
-export const drawField = (ctx: CanvasRenderingContext2D, t: FieldTransform): void => {
+export const drawField = (
+  ctx: CanvasRenderingContext2D,
+  t: FieldTransform,
+  options: FieldDrawOptions = {},
+): void => {
   // Sky / outside-the-park background (covers the foul-territory wedges too).
-  ctx.fillStyle = SKY;
+  ctx.fillStyle = options.skyColor ?? SKY;
   ctx.fillRect(0, 0, t.canvasWidth, t.canvasHeight);
+
+  const grassBase = options.grassShade ?? DEFAULT_GRASS_OUTFIELD;
+  const grassDark = shiftHex(grassBase, -0.04);
+  const grassLight = shiftHex(grassBase, +0.04);
+  const grassInfield = shiftHex(grassBase, +0.08);
 
   // Everything from here in is clipped to fair territory so the dirt and
   // outfield grass can never bleed across the foul lines.
@@ -62,18 +90,19 @@ export const drawField = (ctx: CanvasRenderingContext2D, t: FieldTransform): voi
   fairTerritoryPath(ctx, t);
   ctx.clip();
 
-  // Outfield grass — fills the whole fair territory (the infield shape will
-  // overpaint it with dirt below).
-  ctx.fillStyle = GRASS_OUTFIELD;
+  // Outfield grass — fills the whole fair territory.
+  ctx.fillStyle = grassBase;
   ctx.fillRect(0, 0, t.canvasWidth, t.canvasHeight);
 
-  // Infield dirt — a smooth circular arc centered behind the mound. This
-  // hugs the bases without extending past the foul lines (the clip would
-  // catch it anyway, but a rounded shape reads better than a clipped quad).
+  // Mow stripes — alternating dark/light wedges radiating from home plate.
+  // Carries enormous aesthetic weight per the polish brief.
+  drawMowStripes(ctx, t, grassDark, grassLight);
+
+  // Infield dirt — a smooth circular arc centered behind the mound.
   drawInfieldDirt(ctx, t);
 
   // Infield grass cutout — a small diamond inside the dirt.
-  drawInfieldGrass(ctx, t);
+  drawInfieldGrass(ctx, t, grassInfield);
 
   // Pitcher's mound.
   const mound = worldToScreen(PITCHERS_MOUND, t);
@@ -145,7 +174,11 @@ const drawInfieldDirt = (ctx: CanvasRenderingContext2D, t: FieldTransform): void
   ctx.fill();
 };
 
-const drawInfieldGrass = (ctx: CanvasRenderingContext2D, t: FieldTransform): void => {
+const drawInfieldGrass = (
+  ctx: CanvasRenderingContext2D,
+  t: FieldTransform,
+  fillColor: string,
+): void => {
   // A small diamond just inside the bases — the standard "infield grass"
   // cutout that defines the running surface around the bases.
   const inset = 16; // ft inside each base
@@ -153,7 +186,7 @@ const drawInfieldGrass = (ctx: CanvasRenderingContext2D, t: FieldTransform): voi
   const b = worldToScreen({ x: FIRST_BASE.x - inset, y: FIRST_BASE.y - inset }, t);
   const c = worldToScreen({ x: 0, y: SECOND_BASE.y - 14 }, t);
   const d = worldToScreen({ x: THIRD_BASE.x + inset, y: THIRD_BASE.y - inset }, t);
-  ctx.fillStyle = GRASS_INFIELD;
+  ctx.fillStyle = fillColor;
   ctx.beginPath();
   ctx.moveTo(a.x, a.y);
   ctx.lineTo(b.x, b.y);
@@ -161,6 +194,35 @@ const drawInfieldGrass = (ctx: CanvasRenderingContext2D, t: FieldTransform): voi
   ctx.lineTo(d.x, d.y);
   ctx.closePath();
   ctx.fill();
+};
+
+// Radial mow stripes from home plate. The fair territory is a 90° wedge
+// (roughly 225°→315° in canvas-clockwise radians). We paint alternating
+// thin wedges in a dark/light pair so the outfield reads as mowed.
+const drawMowStripes = (
+  ctx: CanvasRenderingContext2D,
+  t: FieldTransform,
+  darkColor: string,
+  lightColor: string,
+): void => {
+  const home = worldToScreen(HOME_PLATE, t);
+  const N_STRIPES = 14;
+  // -135° → -45° in canvas radians spans the fair-territory wedge.
+  const startRad = (-135 * Math.PI) / 180;
+  const endRad = (-45 * Math.PI) / 180;
+  const stripeSpan = (endRad - startRad) / N_STRIPES;
+  const outerRadius = Math.hypot(t.canvasWidth, t.canvasHeight); // safe-large
+
+  for (let i = 0; i < N_STRIPES; i++) {
+    const a1 = startRad + i * stripeSpan;
+    const a2 = a1 + stripeSpan;
+    ctx.fillStyle = i % 2 === 0 ? darkColor : lightColor;
+    ctx.beginPath();
+    ctx.moveTo(home.x, home.y);
+    ctx.arc(home.x, home.y, outerRadius, a1, a2);
+    ctx.closePath();
+    ctx.fill();
+  }
 };
 
 const drawBase = (

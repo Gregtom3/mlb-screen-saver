@@ -48,7 +48,13 @@ const buildContextAndEvents = () => {
     ]),
   );
   const teamAbbr = new Map(league.teams.map((t) => [t.id, t.abbr]));
-  const ctx: SceneContext = { input, teamColors, teamAbbr, stadiumName: stadium.name };
+  const ctx: SceneContext = {
+    input,
+    teamColors,
+    teamAbbr,
+    stadiumName: stadium.name,
+    grassShade: stadium.atmosphere.grassShade,
+  };
   return { events, ctx };
 };
 

@@ -137,6 +137,7 @@ const main = () => {
     teamColors,
     teamAbbr,
     stadiumName: stadium.name,
+    grassShade: stadium.atmosphere.grassShade,
   };
 
   const handle = createRenderLoop(canvas, events, sceneCtx, { autoStart: true });

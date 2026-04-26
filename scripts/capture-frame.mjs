@@ -44,7 +44,8 @@ page.on('console', (msg) => {
 });
 
 console.log(`navigating to ${URL}`);
-await page.goto(URL, { waitUntil: 'load', timeout: 20000 });
+const goUrl = process.argv.find((a) => a.startsWith('--url='))?.slice('--url='.length) ?? URL;
+await page.goto(goUrl, { waitUntil: 'load', timeout: 20000 });
 console.log('navigation complete; waiting 5s for sim to play out');
 await wait(5000);
 

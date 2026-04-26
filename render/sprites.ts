@@ -1,10 +1,98 @@
 import type { ScenePlayer, SceneState } from './types.js';
 import { worldToScreen, type FieldTransform } from './transform.js';
 
-// Phase 2 sprites: simple two-color blocks. Phase 4 brings real pixel art
-// (8x8 or 16x16 sheets per role) but the call shape stays the same.
+// 12×12 pixel-art player, top-down ¾ view. Encoded as a string grid:
+//   '.' transparent, 'C' cap, 'J' jersey, 'S' skin, 'P' pants, 'B' belt.
+// Tinted at draw time by capColor and jerseyColor from the team record.
+const PLAYER_SPRITE: readonly string[] = [
+  '............',
+  '.....CC.....',
+  '....CCCC....',
+  '....CCCC....',
+  '....SSSS....',
+  '...JJJJJJ...',
+  '..JJJJJJJJ..',
+  '..JJJJJJJJ..',
+  '...BBBBBB...',
+  '...PPPPPP...',
+  '...PPPPPP...',
+  '....P..P....',
+];
 
-const SPRITE_RADIUS_FT = 6.0;
+const PLAYER_SPRITE_W = 12;
+const PLAYER_SPRITE_H = 12;
+
+// Fixed colors for the non-team parts of the sprite.
+const SKIN_COLOR = '#c79475';
+const PANTS_COLOR = '#3a3f4a';
+const BELT_COLOR = '#2a2d33';
+const SHADOW_COLOR = 'rgba(0, 0, 0, 0.45)';
+const SPRITE_OUTLINE = '#0c0d10';
+
+// Scale chosen so a sprite reads clearly at the default 960×720 viewport.
+const SCALE_PX_PER_FT = 0.55;
+
+const drawShadow = (
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  scaleSize: number,
+): void => {
+  ctx.fillStyle = SHADOW_COLOR;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + scaleSize * 5, scaleSize * 4.5, scaleSize * 1.6, 0, 0, Math.PI * 2);
+  ctx.fill();
+};
+
+const colorForCode = (code: string, capColor: string, jerseyColor: string): string | null => {
+  switch (code) {
+    case 'C':
+      return capColor;
+    case 'J':
+      return jerseyColor;
+    case 'S':
+      return SKIN_COLOR;
+    case 'P':
+      return PANTS_COLOR;
+    case 'B':
+      return BELT_COLOR;
+    case 'O':
+      return SPRITE_OUTLINE;
+    default:
+      return null;
+  }
+};
+
+const drawPixelSprite = (
+  ctx: CanvasRenderingContext2D,
+  rows: readonly string[],
+  cx: number,
+  cy: number,
+  pixelSize: number,
+  capColor: string,
+  jerseyColor: string,
+): void => {
+  const w = rows[0]?.length ?? 0;
+  const h = rows.length;
+  const left = cx - (w * pixelSize) / 2;
+  const top = cy - (h * pixelSize) / 2;
+  for (let r = 0; r < h; r++) {
+    const line = rows[r]!;
+    for (let c = 0; c < w; c++) {
+      const code = line[c]!;
+      if (code === '.' || code === ' ') continue;
+      const color = colorForCode(code, capColor, jerseyColor);
+      if (!color) continue;
+      ctx.fillStyle = color;
+      ctx.fillRect(
+        Math.floor(left + c * pixelSize),
+        Math.floor(top + r * pixelSize),
+        Math.ceil(pixelSize),
+        Math.ceil(pixelSize),
+      );
+    }
+  }
+};
 
 const drawPlayer = (
   ctx: CanvasRenderingContext2D,
@@ -12,47 +100,35 @@ const drawPlayer = (
   p: ScenePlayer,
 ): void => {
   const s = worldToScreen(p.position, t);
-  const r = Math.max(3, t.pixelsPerFoot * SPRITE_RADIUS_FT);
+  const pixelSize = Math.max(1.5, t.pixelsPerFoot * SCALE_PX_PER_FT);
+  drawShadow(ctx, s.x, s.y, pixelSize);
+  drawPixelSprite(ctx, PLAYER_SPRITE, s.x, s.y, pixelSize, p.primaryColor, p.secondaryColor);
 
-  // Body (primary color).
-  ctx.fillStyle = p.primaryColor;
-  ctx.beginPath();
-  ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
-  ctx.fill();
-  // Cap / accent dot (secondary color).
-  ctx.fillStyle = p.secondaryColor;
-  ctx.beginPath();
-  ctx.arc(s.x, s.y - r * 0.5, r * 0.55, 0, Math.PI * 2);
-  ctx.fill();
-  // Outline for readability against grass.
-  ctx.strokeStyle = '#0c0d10';
-  ctx.lineWidth = 1.2;
-  ctx.beginPath();
-  ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
-  ctx.stroke();
-
-  // Role-specific accent.
+  // Role-specific accents.
   if (p.role === 'batter') {
-    // Bat: short line off the trailing shoulder.
-    ctx.strokeStyle = '#d6b78a';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
     const dir = p.position.x < 0 ? -1 : 1;
-    ctx.moveTo(s.x + dir * r, s.y - r * 0.3);
-    ctx.lineTo(s.x + dir * (r + 10), s.y - r * 1.6);
+    ctx.strokeStyle = '#d6b78a';
+    ctx.lineWidth = Math.max(1.5, pixelSize * 1.1);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(s.x + dir * pixelSize * 4, s.y - pixelSize * 1);
+    ctx.lineTo(s.x + dir * pixelSize * 7, s.y - pixelSize * 5);
     ctx.stroke();
   } else if (p.role === 'pitcher') {
-    // Pitcher gets a tiny rubber line behind them.
+    // Rubber strip behind the pitcher.
     ctx.fillStyle = '#f3eedb';
-    ctx.fillRect(s.x - r * 0.6, s.y + r * 0.7, r * 1.2, 1.5);
+    ctx.fillRect(
+      Math.floor(s.x - pixelSize * 3),
+      Math.floor(s.y + pixelSize * 6),
+      Math.ceil(pixelSize * 6),
+      Math.max(1, Math.ceil(pixelSize * 0.6)),
+    );
   }
 };
 
-// 2.5D ball: shadow stays anchored to the field at the ground projection
-// while the ball itself lifts off and grows slightly with altitude. Gives
-// pop-ups a vertical "feel" without leaving the birds-eye perspective.
-const VERTICAL_SCALE = 0.8; // canvas-px-of-lift per foot-of-altitude, before pixelsPerFoot
-const SHADOW_FALLOFF_FT = 80; // shadow fades and shrinks as ball climbs
+// Ball constants
+const VERTICAL_SCALE = 0.8;
+const SHADOW_FALLOFF_FT = 80;
 
 const drawBall = (
   ctx: CanvasRenderingContext2D,
@@ -65,7 +141,6 @@ const drawBall = (
   const baseRadius = 3;
   const ballRadius = baseRadius + scene.ball.heightFt * 0.04;
 
-  // Shadow on the field — only while in flight (otherwise it overlaps the ball).
   if (scene.ball.inFlight && scene.ball.heightFt > 0.1) {
     const heightFactor = Math.min(1, scene.ball.heightFt / SHADOW_FALLOFF_FT);
     const shadowAlpha = 0.55 * (1 - heightFactor * 0.55);
@@ -76,7 +151,6 @@ const drawBall = (
     ctx.fill();
   }
 
-  // Ball — raised by altitude.
   const bx = ground.x;
   const by = ground.y - heightPx;
   ctx.fillStyle = '#ffffff';
@@ -87,7 +161,6 @@ const drawBall = (
   ctx.fill();
   ctx.stroke();
 
-  // Faint stitch dot for visual interest at higher altitudes.
   if (scene.ball.heightFt > 12) {
     ctx.fillStyle = '#c4262e';
     ctx.beginPath();
@@ -101,7 +174,7 @@ export const drawScene = (
   t: FieldTransform,
   scene: SceneState,
 ): void => {
-  // Order: catcher (back), fielders, pitcher, runners (above bases), batter, ball (top).
+  // Order: catcher (back), fielders, pitcher, runners, batter, ball (top).
   if (scene.catcher) drawPlayer(ctx, t, scene.catcher);
   for (const f of scene.fielders) drawPlayer(ctx, t, f);
   if (scene.pitcher) drawPlayer(ctx, t, scene.pitcher);
