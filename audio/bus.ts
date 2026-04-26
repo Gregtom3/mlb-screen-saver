@@ -9,7 +9,11 @@ interface AudioState {
 
 let state: AudioState | null = null;
 let muted = false;
-let volume = 0.5;
+let volume = 0.85;
+
+// Small scheduling lookahead so sounds don't land in the past while the
+// AudioContext is still resuming after the user gesture.
+export const SCHEDULE_LEAD_SEC = 0.01;
 
 export function ensureAudio(): AudioState {
   if (!state) {

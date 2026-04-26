@@ -9,4 +9,5 @@ export {
   hardHitWoosh,
   foulTick,
   organStinger,
+  testTone,
 } from './sfx.js';
