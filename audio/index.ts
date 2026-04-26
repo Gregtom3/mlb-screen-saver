@@ -14,3 +14,4 @@ export {
   strike3Call,
   batSnap,
 } from './sfx.js';
+export { createSfxDispatcher, type SfxDispatcher } from './dispatcher.js';
