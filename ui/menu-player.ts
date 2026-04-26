@@ -4,7 +4,7 @@ import {
   battingAvg, era, formatAvg, formatEra, formatIp, formatSigned,
   formatWhip, ops, sluggingPct, whip,
 } from '../stats/derived.js';
-import { groupsForPlayer, RATING_EFFECTS, starRating, starsToGlyphs } from '../stats/grades.js';
+import { groupsForPlayer, RATING_EFFECTS, RATING_QUANTIFIED, starRating, starsToGlyphs } from '../stats/grades.js';
 import { battingHotCold, pitchingHotCold } from '../stats/hot-cold.js';
 import { drawPortrait } from './portrait.js';
 import { drawSprayChart } from './spray-chart.js';
@@ -118,22 +118,27 @@ const renderAttributePanel = (host: HTMLElement, player: Player): void => {
     const groupEl = document.createElement('div');
     groupEl.className = 'attr-group';
     groupEl.innerHTML = `<h4>${g.title}</h4>`;
-    const table = document.createElement('table');
-    table.className = 'attr-table';
-    const rows: string[] = [];
+    const list = document.createElement('div');
+    list.className = 'attr-list';
     for (const key of g.keys) {
-      const value = player.ratings[key as keyof PlayerRatings];
+      const k = key as keyof PlayerRatings;
+      const value = player.ratings[k];
       const grade = starRating(value);
-      const tip = RATING_EFFECTS[key as keyof PlayerRatings] ?? '';
-      rows.push(`
-        <tr title="${tip}">
-          <td class="attr-name">${prettyName(key as keyof PlayerRatings)}</td>
-          <td class="attr-stars attr-${grade.bucket}">${starsToGlyphs(grade.stars)}</td>
-          <td class="attr-label">${grade.label}</td>
-        </tr>`);
+      const desc = RATING_EFFECTS[k] ?? '';
+      const quant = RATING_QUANTIFIED[k] ?? '';
+      const row = document.createElement('div');
+      row.className = 'attr-row';
+      row.innerHTML = `
+        <div class="attr-row-header">
+          <span class="attr-name">${prettyName(k)}</span>
+          <span class="attr-stars attr-${grade.bucket}">${starsToGlyphs(grade.stars)}</span>
+          <span class="attr-label">${grade.label}</span>
+        </div>
+        <div class="attr-desc">${desc}</div>
+        <div class="attr-quant">${quant}</div>`;
+      list.appendChild(row);
     }
-    table.innerHTML = `<tbody>${rows.join('')}</tbody>`;
-    groupEl.appendChild(table);
+    groupEl.appendChild(list);
     sec.appendChild(groupEl);
   }
   host.appendChild(sec);
