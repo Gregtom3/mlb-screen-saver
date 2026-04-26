@@ -1,0 +1,175 @@
+
+[2mleague seed: 0xba5eba11 · day 1 · game 1/8[0m
+
+[1mHonolulu Outriggers[0m at [1mAnchorage Halibut[0m — Tide Park
+
+[1mTop of the 1st[0m
+  McKinnon singled
+  Salas grounded out
+  Gomez lined out
+  Fisher struck out looking
+  [2m— 0 runs, 1 hit (9 pitches)[0m
+
+[1mBottom of the 1st[0m
+  Molina popped out
+  Ibarra grounded out
+  Reyes walked
+  Rangel popped out
+  [2m— 0 runs, 0 hits (15 pitches)[0m
+
+[1mTop of the 2nd[0m
+  Franco struck out looking
+  Blackburn walked
+  Adair grounded into a double play
+  [2m— 0 runs, 0 hits (12 pitches)[0m
+
+[1mBottom of the 2nd[0m
+  Ponce grounded out
+  McCoy lined out
+  Brock grounded out
+  [2m— 0 runs, 0 hits (6 pitches)[0m
+
+[1mTop of the 3rd[0m
+  Granger struck out swinging
+  Langley struck out swinging
+  McKinnon singled
+  [1mSalas homered[0m [2m(2 RBI)[0m [2m— McKinnon scores, Salas scores[0m
+  Gomez popped out
+  [2m— 2 runs, 2 hits (15 pitches)[0m
+
+[1mBottom of the 3rd[0m
+  Lemus grounded out
+  Powell walked
+  Molina grounded out
+  Ibarra doubled [2m(1 RBI)[0m [2m— Powell scores[0m
+  Reyes popped out
+  [2m— 1 run, 1 hit (12 pitches)[0m
+
+[1mTop of the 4th[0m
+  Fisher doubled
+  Franco grounded out
+  Blackburn lined out
+  Adair flied out
+  [2m— 0 runs, 1 hit (10 pitches)[0m
+
+[1mBottom of the 4th[0m
+  Rangel struck out looking
+  Ponce singled
+  McCoy popped out
+  Brock lined out
+  [2m— 0 runs, 1 hit (12 pitches)[0m
+
+[1mTop of the 5th[0m
+  Granger singled
+  Langley singled
+  McKinnon hit a sacrifice fly [2m— Granger scores[0m
+  Salas singled
+  Gomez walked
+  Fisher grounded out
+  Franco struck out looking
+  [2m— 1 run, 3 hits (28 pitches)[0m
+
+[1mBottom of the 5th[0m
+  Lemus popped out
+  Powell popped out
+  Molina lined out
+  [2m— 0 runs, 0 hits (5 pitches)[0m
+
+[1mTop of the 6th[0m
+  Blackburn popped out
+  Adair popped out
+  Granger grounded out
+  [2m— 0 runs, 0 hits (6 pitches)[0m
+
+[1mBottom of the 6th[0m
+  Ibarra doubled
+  Reyes lined out
+  Rangel singled [2m(1 RBI)[0m [2m— Ibarra scores[0m
+  Ponce struck out looking
+  McCoy struck out swinging
+  [2m— 1 run, 2 hits (22 pitches)[0m
+
+[1mTop of the 7th[0m
+  Langley singled
+  McKinnon struck out looking
+  Salas popped out
+  Gomez struck out swinging
+  [2m— 0 runs, 1 hit (12 pitches)[0m
+
+[1mBottom of the 7th[0m
+  Brock struck out looking
+  Lemus singled
+  Powell struck out looking
+  Molina singled
+  [1mIbarra homered[0m [2m(3 RBI)[0m [2m— Lemus scores, Molina scores, Ibarra scores[0m
+  [3m[2m» pitching change: Kenny Faulkner → Rowan Long[0m
+  Reyes walked
+  Rangel struck out swinging
+  [2m— 3 runs, 3 hits (22 pitches)[0m
+
+[1mTop of the 8th[0m
+  Fisher singled
+  [3m[2m» pitching change: Jared Wilkins → Cameron Mason[0m
+  Franco walked
+  Blackburn popped out
+  Adair popped out
+  Granger singled [2m(1 RBI)[0m [2m— Fisher scores[0m
+  Langley walked
+  McKinnon grounded out
+  [2m— 1 run, 2 hits (23 pitches)[0m
+
+[1mBottom of the 8th[0m
+  Ponce grounded out
+  McCoy singled
+  Brock struck out looking
+  Lemus popped out
+  [2m— 0 runs, 1 hit (9 pitches)[0m
+
+[1mTop of the 9th[0m
+  Salas struck out looking
+  Gomez singled
+  Fisher struck out swinging
+  Franco grounded out
+  [2m— 0 runs, 1 hit (13 pitches)[0m
+
+[1mFinal:[0m Honolulu Outriggers 4, Anchorage Halibut 5  [2m— Anchorage Halibut wins[0m
+
+
+[1m       1  2  3  4  5  6  7  8  9   R  H  E[0m
+HNL    0  0  2  0  1  0  0  1  0   4 11  0
+ANC    0  0  1  0  0  1  3  0  -   5  8  0
+
+[1mHonolulu Outriggers batters[0m
+[2mplayer                  AB  R  H  RBI  BB   K  HR[0m
+McKinnon                 4  1  2    1   0   1   0
+Salas                    5  1  2    2   0   1   1
+Gomez                    4  0  1    0   1   1   0
+Fisher                   5  1  2    0   0   2   0
+Franco                   4  0  0    0   1   2   0
+Blackburn                3  0  0    0   1   0   0
+Adair                    4  0  0    0   0   0   0
+Granger                  4  1  2    1   0   1   0
+Langley                  3  0  2    0   1   1   0
+
+[1mHonolulu Outriggers pitchers[0m
+[2mplayer                   IP  H  R  BB   K  HR  Pit[0m
+Faulkner                6.2  7  5   2   5   1   87
+Long                    1.1  1  0   1   2   0   16
+
+[1mAnchorage Halibut batters[0m
+[2mplayer                  AB  R  H  RBI  BB   K  HR[0m
+Molina                   4  1  1    0   0   0   0
+Ibarra                   4  2  3    4   0   0   1
+Reyes                    2  0  0    0   2   0   0
+Rangel                   4  0  1    1   0   2   0
+Ponce                    4  0  1    0   0   1   0
+McCoy                    4  0  1    0   0   1   0
+Brock                    4  0  0    0   0   2   0
+Lemus                    4  1  1    0   0   0   0
+Powell                   2  1  0    0   1   1   0
+
+[1mAnchorage Halibut pitchers[0m
+[2mplayer                   IP  H  R  BB   K  HR  Pit[0m
+Wilkins                 7.0  9  3   2   7   1   95
+Mason                   2.0  2  1   2   2   0   33
+

@@ -14,9 +14,11 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
-    "league:print": "tsx app/cli.ts"
+    "league:print": "tsx app/cli.ts",
+    "game:play": "tsx app/play-game.ts"
   },
   "devDependencies": {
+    "@types/node": "^25.6.0",
     "@typescript-eslint/parser": "^8.18.0",
     "eslint": "^9.16.0",
     "eslint-import-resolver-typescript": "^3.7.0",

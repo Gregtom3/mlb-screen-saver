@@ -1,10 +1,14 @@
 import type { LeagueSnapshot, SeasonState } from '../world/types.js';
+import { createPRNG } from '../sim/prng.js';
 import { buildTeamsAndStadiums } from './teams.js';
+import { generateAllPlayers } from './player-init.js';
 
-// Phase 0: produce a minimal, valid LeagueSnapshot from a master seed.
-// Player generation is Phase 1. Schedule generation is Phase 1.
+// Produce a complete LeagueSnapshot from a master seed: identities, stadiums,
+// all rosters. Schedule lives in /season and is built on top of this snapshot.
 export const generateInitialLeague = (masterSeed: number): LeagueSnapshot => {
   const { teams, stadiums } = buildTeamsAndStadiums();
+  const rng = createPRNG(masterSeed);
+  const players = generateAllPlayers(rng.fork('players'), teams);
 
   const season: SeasonState = {
     year: 1,
@@ -24,7 +28,7 @@ export const generateInitialLeague = (masterSeed: number): LeagueSnapshot => {
     createdAtSeed: masterSeed,
     teams,
     stadiums,
-    players: [], // Phase 1 fills this
+    players,
     season,
   };
 };

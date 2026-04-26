@@ -3,3 +3,6 @@
 // it never reaches into here. See CLAUDE.md "Hard architectural rules".
 export * from './types.js';
 export { createPRNG } from './prng.js';
+export { runGame } from './game.js';
+export { buildBoxScore } from './box-score.js';
+export type { BoxScoreView, BatterLine, PitcherLine, LineScore } from './box-score.js';
