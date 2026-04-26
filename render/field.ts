@@ -117,15 +117,28 @@ export const drawField = (
 
   ctx.restore();
 
-  // Outfield wall outline (drawn outside the clip so it sits on top).
-  ctx.strokeStyle = WALL_LINE;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
   const lf = worldToScreen(polarToField(-45, OUTFIELD_DEPTHS.leftFoul), t);
   const lc = worldToScreen(polarToField(-22, OUTFIELD_DEPTHS.leftCenter), t);
   const cf = worldToScreen(polarToField(0, OUTFIELD_DEPTHS.center), t);
   const rc = worldToScreen(polarToField(22, OUTFIELD_DEPTHS.rightCenter), t);
   const rf = worldToScreen(polarToField(45, OUTFIELD_DEPTHS.rightFoul), t);
+
+  // Stadium frame band — concrete-gray stroke wider than the wall, drawn
+  // first so the wall outline overlays cleanly on top. Suggests the back
+  // of the stands behind the wall.
+  ctx.strokeStyle = '#5a626c';
+  ctx.lineWidth = 12;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(lf.x, lf.y);
+  ctx.quadraticCurveTo(lc.x, lc.y - 12, cf.x, cf.y);
+  ctx.quadraticCurveTo(rc.x, rc.y - 12, rf.x, rf.y);
+  ctx.stroke();
+
+  // Wall outline on top, thinner.
+  ctx.strokeStyle = WALL_LINE;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
   ctx.moveTo(lf.x, lf.y);
   ctx.quadraticCurveTo(lc.x, lc.y - 12, cf.x, cf.y);
   ctx.quadraticCurveTo(rc.x, rc.y - 12, rf.x, rf.y);
