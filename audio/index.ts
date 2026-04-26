@@ -1,2 +1,12 @@
-// /audio — chiptune SFX and ambient crowd. Subscribes to sim events. Phase 4.
-export const AUDIO_PHASE_PLACEHOLDER = true;
+// /audio — chiptune SFX. Subscribes to sim events; never reads back into /sim.
+// Phase 4 (audio bring-up). Procedural WebAudio, no asset files.
+
+export { ensureAudio, setMuted, isMuted, setVolume, getVolume } from './bus.js';
+export {
+  catcherMittPop,
+  fielderGlovePop,
+  batCrack,
+  hardHitWoosh,
+  foulTick,
+  organStinger,
+} from './sfx.js';
