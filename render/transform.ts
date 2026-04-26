@@ -14,7 +14,15 @@ export interface FieldTransform {
 
 const TARGET_OUTFIELD_FT = 420; // a touch past the deepest fence
 const TARGET_FOUL_FT = 240; // half of the lateral spread we want visible
-const HOME_BOTTOM_MARGIN = 110; // px below home plate, leaves room for catcher + bottom HUD panels
+// Reserved space between home plate and the canvas bottom. Has to fit:
+//   catcher sprite (~22 px below home plate)
+//   gap
+//   bottom HUD panels (PANEL_HEIGHT)
+//   gap
+//   controls overlay (~36 px in CSS pixels, doubled at DPR=2)
+// Tight enough to leave field space on small viewports, tall enough that
+// nothing visible clips when the controls bar floats over the bottom.
+const HOME_BOTTOM_MARGIN = 138;
 
 export const computeTransform = (canvasWidth: number, canvasHeight: number): FieldTransform => {
   const fieldTop = TOP_HUD_HEIGHT + 10; // small breathing room below the bug

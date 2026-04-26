@@ -34,8 +34,11 @@ export const TOP_HUD_HEIGHT = STANDINGS_HEIGHT + SCOREBUG_HEIGHT;
 const TIER_1_H = 40;
 const TIER_2_H = SCOREBUG_HEIGHT - TIER_1_H;
 
-const PANEL_BOTTOM_INSET = 12;
-const PANEL_HEIGHT = 86;
+// Bottom panels sit above the floating #controls overlay (~36 px tall in
+// CSS pixels, doubled when devicePixelRatio = 2). Inset accounts for that
+// so the panels stay readable without sliding under the controls.
+const PANEL_BOTTOM_INSET = 56;
+const PANEL_HEIGHT = 78;
 const BATTER_CARD_W = 240;
 const LINE_SCORE_W = 320;
 
