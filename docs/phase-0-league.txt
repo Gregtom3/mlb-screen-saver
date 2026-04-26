@@ -1,0 +1,101 @@
+
+═══════════════════ [1m8-Bit Baseball — Founding League[0m ═══════════════════
+  [2mleague id:[0m league-3126770193   [2mmaster seed:[0m 0xba5eba11
+  [2mteams:[0m 16   [2mstadiums:[0m 16   [2mseason:[0m year 1 (regular)
+
+══════════════════════════ [1mWestern Conference[0m ══════════════════════════
+
+  [1mPacific Division[0m
+
+  [48;2;13;43;79m   [0m[48;2;200;211;220m   [0m[48;2;224;138;58m   [0m  [1m[38;2;13;43;79mAnchorage Halibut[0m [2m(ANC)[0m
+         [3m[2mmascot:[0m Hal the Halibut
+         [1mTide Park[0m — 335–372–415–360–308 ft · wall 9 ft · foul 6/10
+         [2mquirk:[0m short porch right (308 ft)
+
+  [48;2;10;138;140m   [0m[48;2;243;215;163m   [0m[48;2;239;111;92m   [0m  [1m[38;2;10;138;140mHonolulu Outriggers[0m [2m(HNL)[0m
+         [3m[2mmascot:[0m Kai the Outrigger
+         [1mDiamond Head Diamond[0m — 320–376–405–376–320 ft · wall 12 ft · foul 4/10
+         [2mquirk:[0m wind tunnel (cross)
+
+  [48;2;36;78;43m   [0m[48;2;243;238;219m   [0m[48;2;169;50;38m   [0m  [1m[38;2;36;78;43mSpokane Lumberjacks[0m [2m(SPK)[0m
+         [3m[2mmascot:[0m Big Tim
+         [1mPinegrove Field[0m — 340–380–410–380–340 ft · wall 14 ft · foul 5/10
+         [2mquirk:[0m ivy-covered left wall
+
+  [48;2;60;74;85m   [0m[48;2;99;145;179m   [0m[48;2;184;115;51m   [0m  [1m[38;2;60;74;85mBoise Steelheads[0m [2m(BOI)[0m
+         [3m[2mmascot:[0m Rivet
+         [1mRiver Reach[0m — 332–370–408–365–332 ft · wall 11 ft · foul 5/10
+         [2mquirk:[0m clock tower in play
+
+
+  [1mMountain Division[0m
+
+  [48;2;62;107;62m   [0m[48;2;216;185;122m   [0m[48;2;226;106;44m   [0m  [1m[38;2;62;107;62mTucson Saguaros[0m [2m(TUS)[0m
+         [3m[2mmascot:[0m Saguaro Sam
+         [1mSaguaro Park[0m — 345–385–410–385–345 ft · wall 8 ft · foul 8/10
+         [2mquirk:[0m giant mascot statue (center)
+
+  [48;2;138;59;30m   [0m[48;2;240;232;208m   [0m[48;2;28;28;28m   [0m  [1m[38;2;138;59;30mCheyenne Stampede[0m [2m(CHE)[0m
+         [3m[2mmascot:[0m Buck
+         [1mFrontier Field[0m — 330–365–400–365–330 ft · wall 9 ft · foul 6/10
+         [2mquirk:[0m wind tunnel (out)
+
+  [48;2;90;93;99m   [0m[48;2;127;182;229m   [0m[48;2;232;197;69m   [0m  [1m[38;2;90;93;99mBoulder Flatirons[0m [2m(BDR)[0m
+         [3m[2mmascot:[0m Slabby
+         [1mGranite Glen[0m — 348–395–420–390–348 ft · wall 10 ft · foul 7/10
+         [2mquirk:[0m thin air (5430 ft elevation)
+
+  [48;2;179;90;49m   [0m[48;2;58;166;162m   [0m[48;2;240;226;200m   [0m  [1m[38;2;179;90;49mSanta Fe Vaqueros[0m [2m(SFE)[0m
+         [3m[2mmascot:[0m Don Diego
+         [1mAdobe Yard[0m — 308–372–405–380–340 ft · wall 16 ft · foul 5/10
+         [2mquirk:[0m short porch left (308 ft)
+
+══════════════════════════ [1mEastern Conference[0m ══════════════════════════
+
+  [1mHeartland Division[0m
+
+  [48;2;62;74;85m   [0m[48;2;58;166;224m   [0m[48;2;244;244;244m   [0m  [1m[38;2;62;74;85mWichita Jetstream[0m [2m(WIC)[0m
+         [3m[2mmascot:[0m Mach
+         [1mSkystream Park[0m — 325–370–400–365–325 ft · wall 8 ft · foul 4/10
+         [2mquirk:[0m wind tunnel (out)
+
+  [48;2;155;42;28m   [0m[48;2;230;213;166m   [0m[48;2;90;58;34m   [0m  [1m[38;2;155;42;28mDes Moines Drovers[0m [2m(DSM)[0m
+         [3m[2mmascot:[0m Hoss
+         [1mCattleyard Park[0m — 338–378–408–378–338 ft · wall 10 ft · foul 7/10
+         [2mquirk:[0m pond beyond right field
+
+  [48;2;169;211;230m   [0m[48;2;255;255;255m   [0m[48;2;31;45;74m   [0m  [1m[38;2;169;211;230mMadison Glaciers[0m [2m(MAD)[0m
+         [3m[2mmascot:[0m Drift
+         [1mGlacier Hollow[0m — 342–390–425–390–342 ft · wall 12 ft · foul 6/10
+         [2mquirk:[0m deep center (425 ft)
+
+  [48;2;168;150;130m   [0m[48;2;58;58;58m   [0m[48;2;241;196;15m   [0m  [1m[38;2;168;150;130mLubbock Cyclones[0m [2m(LUB)[0m
+         [3m[2mmascot:[0m Whirly
+         [1mTwister Bowl[0m — 330–372–405–372–330 ft · wall 9 ft · foul 3/10
+         [2mquirk:[0m wind tunnel (cross)
+
+
+  [1mAtlantic Division[0m
+
+  [48;2;28;28;28m   [0m[48;2;212;175;55m   [0m[48;2;240;230;200m   [0m  [1m[38;2;28;28;28mLouisville Spiders[0m [2m(LOU)[0m
+         [3m[2mmascot:[0m Webfoot
+         [1mWebwork Park[0m — 333–376–405–376–325 ft · wall 11 ft · foul 5/10
+         [2mquirk:[0m ivy-covered left wall
+
+  [48;2;169;50;38m   [0m[48;2;29;74;47m   [0m[48;2;240;230;200m   [0m  [1m[38;2;169;50;38mBurlington Maple Kings[0m [2m(BTV)[0m
+         [3m[2mmascot:[0m King Maple
+         [1mSapwood Stadium[0m — 312–368–402–372–338 ft · wall 18 ft · foul 5/10
+         [2mquirk:[0m giant mascot statue (left)
+
+  [48;2;90;125;140m   [0m[48;2;122;143;90m   [0m[48;2;212;161;74m   [0m  [1m[38;2;90;125;140mAsheville Switchbacks[0m [2m(AVL)[0m
+         [3m[2mmascot:[0m Switchback Sal
+         [1mSwitchback Hollow[0m — 336–380–412–380–336 ft · wall 10 ft · foul 5/10
+         [2mquirk:[0m hill in center field
+
+  [48;2;31;45;74m   [0m[48;2;163;170;178m   [0m[48;2;241;196;15m   [0m  [1m[38;2;31;45;74mPortland Lighthouses[0m [2m(PWM)[0m
+         [3m[2mmascot:[0m Beacon
+         [1mBeacon Field[0m — 330–372–400–360–305 ft · wall 22 ft · foul 4/10
+         [2mquirk:[0m giant mascot statue (right)
+
+────────────────── [1mend of Phase 0 placeholder league[0m ───────────────────
+
