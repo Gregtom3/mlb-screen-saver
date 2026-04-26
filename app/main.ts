@@ -1,5 +1,6 @@
 import { generateInitialLeague } from '../content/index.js';
 import { buildSchedule, buildLineup } from '../season/index.js';
+import { buildLeagueHistory, type LeagueHistory } from '../season/history.js';
 import { runGame } from '../sim/index.js';
 import type { GameInput, SideInput, SimEvent } from '../sim/types.js';
 import type { Player, PlayerId, Stadium, Team, TeamId } from '../world/types.js';
@@ -11,7 +12,7 @@ import {
   type TeamStanding,
   type SceneContext,
 } from '../render/index.js';
-import { mountMenu, type LiveGameSummary } from '../ui/index.js';
+import { mountMenu, type GameMetadata, type LiveGameSummary } from '../ui/index.js';
 import { buildSeasonAggregates, type FinishedGame, type SeasonAggregates } from '../stats/index.js';
 import { buildProjections } from '../projections/index.js';
 import type { ProjectionSet } from '../projections/types.js';
@@ -31,6 +32,12 @@ const SEED = QS.get('seed') ? parseSeed(QS.get('seed')!) : 0xba_5e_ba_11;
 const HISTORY_DAYS = QS.get('history') ? parseInt(QS.get('history')!, 10) : 4;
 const LIVE_DAY = QS.get('day') ? parseInt(QS.get('day')!, 10) : HISTORY_DAYS + 1;
 const INITIAL_GAME = QS.get('game') ? parseInt(QS.get('game')!, 10) - 1 : 0;
+// Phase 6: pre-simulate N prior seasons in their entirety. Each one is ~1200
+// games / a few seconds in JS, so default low; opt in for richer history.
+const PRIOR_SEASONS = QS.get('priorSeasons') ? parseInt(QS.get('priorSeasons')!, 10) : 1;
+const PRIOR_SEASON_DAYS = QS.get('priorSeasonDays')
+  ? parseInt(QS.get('priorSeasonDays')!, 10)
+  : 0; // 0 = full schedule
 
 const SPEED_PRESETS = [
   { label: '0.5×', tps: DEFAULT_TICKS_PER_SECOND * 0.5 },
@@ -214,14 +221,47 @@ const main = () => {
   const league = generateInitialLeague(SEED);
   const schedule = buildSchedule(league.teams, league.season.year);
 
-  // ---- Pre-simulate history days. Stash events for /stats so the menu has
-  // full season context (PA/PA splits, hit charts, WP timelines).
+  // ---- Phase 6: simulate prior seasons (full or truncated) to populate the
+  // History view. Each prior season uses a distinct seed offset so outcomes
+  // differ year-over-year. The league roster itself doesn't age across
+  // seasons yet — that lands when retirement/draft logic does.
+  const priorSummaries: { year: number; agg: SeasonAggregates; teamGames: number }[] = [];
+  const gameMetadata = new Map<string, GameMetadata>();
+  const PRIOR_SEASON_GOLDEN_RATIO = 0x9e_37_79_b9;
+  for (let i = 0; i < PRIOR_SEASONS; i++) {
+    const priorYear = league.season.year - PRIOR_SEASONS + i;
+    const priorSeed = SEED ^ Math.imul(PRIOR_SEASON_GOLDEN_RATIO, i + 1);
+    const totalDays = PRIOR_SEASON_DAYS > 0
+      ? Math.min(PRIOR_SEASON_DAYS, schedule.totalDays)
+      : schedule.totalDays;
+    const games: FinishedGame[] = [];
+    for (let day = 1; day <= totalDays; day++) {
+      for (const entry of schedule.entries.filter((e) => e.day === day)) {
+        const { input } = buildGameInput(league, entry, priorSeed);
+        const events = runGame(input);
+        games.push({ events, input, day });
+      }
+    }
+    const agg = buildSeasonAggregates(games, league.teams, league.players, priorYear);
+    priorSummaries.push({ year: priorYear, agg, teamGames: totalDays });
+  }
+
+  // ---- Pre-simulate current-season history days. Stash events for /stats so
+  // the menu has full season context (PA/PA splits, hit charts, WP timelines).
   const historyGames: FinishedGame[] = [];
   for (let day = 1; day < LIVE_DAY; day++) {
     for (const entry of schedule.entries.filter((e) => e.day === day)) {
       const { input } = buildGameInput(league, entry, SEED);
       const events = runGame(input);
       historyGames.push({ events, input, day });
+      gameMetadata.set(entry.gameId, {
+        gameId: entry.gameId,
+        day: entry.day,
+        homeTeamId: entry.homeTeamId,
+        awayTeamId: entry.awayTeamId,
+        homeStartingPitcher: input.home.startingPitcherId,
+        awayStartingPitcher: input.away.startingPitcherId,
+      });
     }
   }
   const aggregates: SeasonAggregates = buildSeasonAggregates(
@@ -248,6 +288,14 @@ const main = () => {
     const { input, home, stadium } = buildGameInput(league, entry, SEED);
     const events = runGame(input);
     const sceneCtx = buildSceneCtxFor(league, input, home, stadium);
+    gameMetadata.set(entry.gameId, {
+      gameId: entry.gameId,
+      day: entry.day,
+      homeTeamId: entry.homeTeamId,
+      awayTeamId: entry.awayTeamId,
+      homeStartingPitcher: input.home.startingPitcherId,
+      awayStartingPitcher: input.away.startingPitcherId,
+    });
     return {
       events,
       sceneCtx,
@@ -339,6 +387,15 @@ const main = () => {
   const stadiumIndex = new Map(league.stadiums.map((s) => [s.id, s]));
   const teamGamesPlayed = LIVE_DAY; // history days + live day, all complete
 
+  // Phase 6: build the LeagueHistory once. Retired set stays empty until we
+  // ship aging/retirement; HoF then trips automatically when it's populated.
+  const history: LeagueHistory = buildLeagueHistory({
+    seasons: priorSummaries,
+    teams: league.teams,
+    playerIndex,
+    retiredPlayers: new Set(),
+  });
+
   // Lazy projections — single cached set per session.
   let projectionsCache: ProjectionSet | null = null;
   const getProjections = (): ProjectionSet => {
@@ -388,6 +445,8 @@ const main = () => {
       setChannelByGameId(gameId);
       menu.close();
     },
+    getHistory: () => history,
+    getGameMetadata: (gameId) => gameMetadata.get(gameId),
   });
 
   globalThis.addEventListener('keydown', (ev) => {

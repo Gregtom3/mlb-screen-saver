@@ -1,12 +1,72 @@
 import type { Team, TeamId } from '../world/types.js';
+import type { BattingLine, PitchingLine } from '../stats/types.js';
 import {
   battingAvg, era, formatAvg, formatEra, formatIp, formatSigned, formatWhip,
-  last10, ops, runDiff, sluggingPct, streak, whip, winPct,
+  last10, onBasePct, ops, runDiff, sluggingPct, streak, whip, winPct,
 } from '../stats/derived.js';
 import { isQualifiedBatter, isQualifiedPitcher } from '../stats/qualifiers.js';
 import { mvpRanking, cyYoungRanking, rookieRanking } from '../stats/awards.js';
 import type { MenuContext } from './menu-shared.js';
-import { emptyState } from './menu-shared.js';
+import { emptyState, playerNameLink } from './menu-shared.js';
+
+// Phase 5.5 League view, with Phase 6 sortable leaderboards. Each table
+// stores its current sort state on a closure so re-renders preserve it
+// across clicks without a full menu re-render.
+
+interface LeaderboardCol<L> {
+  readonly key: string;
+  readonly label: string;
+  readonly value: (line: L) => number;
+  /** Default sort direction when this column is first selected. */
+  readonly defaultDir: 'asc' | 'desc';
+  /** Cell renderer; defaults to integer formatting. */
+  readonly format?: (line: L) => string;
+}
+
+const BATTING_COLUMNS: readonly LeaderboardCol<BattingLine>[] = [
+  { key: 'G', label: 'G', value: (b) => b.G, defaultDir: 'desc' },
+  { key: 'PA', label: 'PA', value: (b) => b.PA, defaultDir: 'desc' },
+  { key: 'AB', label: 'AB', value: (b) => b.AB, defaultDir: 'desc' },
+  { key: 'H', label: 'H', value: (b) => b.H, defaultDir: 'desc' },
+  { key: 'HR', label: 'HR', value: (b) => b.HR, defaultDir: 'desc' },
+  { key: 'RBI', label: 'RBI', value: (b) => b.RBI, defaultDir: 'desc' },
+  { key: 'BB', label: 'BB', value: (b) => b.BB, defaultDir: 'desc' },
+  { key: 'SO', label: 'SO', value: (b) => b.SO, defaultDir: 'asc' },
+  { key: 'AVG', label: 'AVG', value: (b) => battingAvg(b), defaultDir: 'desc',
+    format: (b) => formatAvg(battingAvg(b)) },
+  { key: 'OBP', label: 'OBP', value: (b) => onBasePct(b), defaultDir: 'desc',
+    format: (b) => formatAvg(onBasePct(b)) },
+  { key: 'SLG', label: 'SLG', value: (b) => sluggingPct(b), defaultDir: 'desc',
+    format: (b) => formatAvg(sluggingPct(b)) },
+  { key: 'OPS', label: 'OPS', value: (b) => ops(b), defaultDir: 'desc',
+    format: (b) => formatAvg(ops(b)) },
+  { key: 'WPA', label: 'WPA', value: (b) => b.WPA, defaultDir: 'desc',
+    format: (b) => formatSigned(b.WPA, 2) },
+];
+
+const PITCHING_COLUMNS: readonly LeaderboardCol<PitchingLine>[] = [
+  { key: 'G', label: 'G', value: (p) => p.G, defaultDir: 'desc' },
+  { key: 'GS', label: 'GS', value: (p) => p.GS, defaultDir: 'desc' },
+  { key: 'IP', label: 'IP', value: (p) => p.IPouts, defaultDir: 'desc',
+    format: (p) => formatIp(p) },
+  { key: 'H', label: 'H', value: (p) => p.H, defaultDir: 'asc' },
+  { key: 'R', label: 'R', value: (p) => p.R, defaultDir: 'asc' },
+  { key: 'ER', label: 'ER', value: (p) => p.ER, defaultDir: 'asc' },
+  { key: 'BB', label: 'BB', value: (p) => p.BB, defaultDir: 'asc' },
+  { key: 'SO', label: 'SO', value: (p) => p.SO, defaultDir: 'desc' },
+  { key: 'HR', label: 'HR', value: (p) => p.HR, defaultDir: 'asc' },
+  { key: 'ERA', label: 'ERA', value: (p) => era(p), defaultDir: 'asc',
+    format: (p) => formatEra(era(p)) },
+  { key: 'WHIP', label: 'WHIP', value: (p) => whip(p), defaultDir: 'asc',
+    format: (p) => formatWhip(whip(p)) },
+  { key: 'WPA', label: 'WPA', value: (p) => p.WPA, defaultDir: 'desc',
+    format: (p) => formatSigned(p.WPA, 2) },
+];
+
+interface SortState {
+  key: string;
+  dir: 'asc' | 'desc';
+}
 
 export const renderLeague = (
   host: HTMLElement,
@@ -100,16 +160,18 @@ export const renderLeague = (
       <h3>${title}</h3>
       <ol>${items.join('')}</ol>
     </div>`;
+  const awardItem = (
+    c: { playerId: string; player: { firstName: string; lastName: string } | undefined; score: number },
+  ): string => {
+    const name = c.player ? `${c.player.firstName} ${c.player.lastName}` : c.playerId;
+    return `<li data-player="${c.playerId}">
+      <span class="aw-name">${name}</span>
+      <span class="aw-score">${formatSigned(c.score, 2)}</span></li>`;
+  };
   awardsRow.innerHTML =
-    awardCol('MVP', mvp.slice(0, 5).map((c) => `<li data-player="${c.playerId}">
-        <span class="aw-name">${c.player ? c.player.firstName + ' ' + c.player.lastName : c.playerId}</span>
-        <span class="aw-score">${formatSigned(c.score, 2)}</span></li>`)) +
-    awardCol('Cy Young', cy.slice(0, 5).map((c) => `<li data-player="${c.playerId}">
-        <span class="aw-name">${c.player ? c.player.firstName + ' ' + c.player.lastName : c.playerId}</span>
-        <span class="aw-score">${formatSigned(c.score, 2)}</span></li>`)) +
-    awardCol('Rookie', rk.slice(0, 5).map((c) => `<li data-player="${c.playerId}">
-        <span class="aw-name">${c.player ? c.player.firstName + ' ' + c.player.lastName : c.playerId}</span>
-        <span class="aw-score">${formatSigned(c.score, 2)}</span></li>`));
+    awardCol('MVP', mvp.slice(0, 5).map(awardItem)) +
+    awardCol('Cy Young', cy.slice(0, 5).map(awardItem)) +
+    awardCol('Rookie', rk.slice(0, 5).map(awardItem));
   awardsRow.querySelectorAll<HTMLLIElement>('li[data-player]').forEach((li) => {
     li.addEventListener('click', () => {
       const id = li.dataset['player'];
@@ -125,99 +187,141 @@ export const renderLeague = (
   wrap.appendChild(lbHeader);
 
   const battingHeader = document.createElement('h3');
-  battingHeader.textContent = 'Batting (qualified)';
+  battingHeader.textContent = 'Batting (qualified · click a column to sort)';
   wrap.appendChild(battingHeader);
 
-  const battingRows = [...agg.batting.values()]
-    .filter((b) => isQualifiedBatter(b, games))
-    .sort((a, b) => battingAvg(b) - battingAvg(a))
-    .slice(0, 12);
+  const battingRows = [...agg.batting.values()].filter((b) => isQualifiedBatter(b, games));
   if (battingRows.length === 0) {
     wrap.appendChild(emptyState('No qualified hitters yet — keep watching.'));
   } else {
-    const table = document.createElement('table');
-    table.innerHTML = `
-      <thead>
-        <tr>
-          <th>Player</th><th>Team</th>
-          <th>G</th><th>PA</th><th>AB</th><th>H</th>
-          <th>HR</th><th>RBI</th><th>BB</th><th>SO</th>
-          <th>AVG</th><th>OBP</th><th>SLG</th><th>OPS</th><th>WPA</th>
-        </tr>
-      </thead>
-      <tbody>
-      ${battingRows.map((b) => {
-        const player = ctx.playerIndex.get(b.playerId);
-        const team = teamById.get(b.teamId);
-        return `
-          <tr data-player="${b.playerId}" class="clickable">
-            <td>${player ? player.firstName + ' ' + player.lastName : b.playerId}</td>
-            <td>${team ? team.abbr : ''}</td>
-            <td>${b.G}</td><td>${b.PA}</td><td>${b.AB}</td><td>${b.H}</td>
-            <td>${b.HR}</td><td>${b.RBI}</td><td>${b.BB}</td><td>${b.SO}</td>
-            <td>${formatAvg(battingAvg(b))}</td>
-            <td>${formatAvg((b.H + b.BB + b.HBP) / Math.max(1, b.AB + b.BB + b.HBP + b.SF))}</td>
-            <td>${formatAvg(sluggingPct(b))}</td>
-            <td>${formatAvg(ops(b))}</td>
-            <td>${formatSigned(b.WPA, 2)}</td>
-          </tr>`;
-      }).join('')}
-      </tbody>`;
-    table.querySelectorAll<HTMLTableRowElement>('tr.clickable').forEach((tr) => {
-      tr.addEventListener('click', () => {
-        const id = tr.dataset['player'];
-        if (id) onPlayerClick(id);
-      });
-    });
-    wrap.appendChild(table);
+    wrap.appendChild(
+      buildSortableLeaderboard(
+        battingRows,
+        BATTING_COLUMNS,
+        { key: 'AVG', dir: 'desc' },
+        (b) => {
+          const player = ctx.playerIndex.get(b.playerId);
+          const team = teamById.get(b.teamId);
+          const name = player ? `${player.firstName} ${player.lastName}` : b.playerId;
+          return {
+            playerId: b.playerId,
+            nameCell: playerNameLink(name, b.playerId),
+            teamCell: team ? team.abbr : '',
+          };
+        },
+        onPlayerClick,
+      ),
+    );
   }
 
   const pitchingHeader = document.createElement('h3');
-  pitchingHeader.textContent = 'Pitching (qualified)';
+  pitchingHeader.textContent = 'Pitching (qualified · click a column to sort)';
   wrap.appendChild(pitchingHeader);
 
-  const pitchingRows = [...agg.pitching.values()]
-    .filter((p) => isQualifiedPitcher(p, games))
-    .sort((a, b) => era(a) - era(b))
-    .slice(0, 12);
+  const pitchingRows = [...agg.pitching.values()].filter((p) => isQualifiedPitcher(p, games));
   if (pitchingRows.length === 0) {
     wrap.appendChild(emptyState('No qualified pitchers yet.'));
   } else {
-    const table = document.createElement('table');
-    table.innerHTML = `
-      <thead>
-        <tr>
-          <th>Player</th><th>Team</th>
-          <th>G</th><th>GS</th><th>IP</th>
-          <th>H</th><th>R</th><th>ER</th><th>BB</th><th>SO</th><th>HR</th>
-          <th>ERA</th><th>WHIP</th><th>WPA</th>
-        </tr>
-      </thead>
-      <tbody>
-      ${pitchingRows.map((p) => {
-        const player = ctx.playerIndex.get(p.playerId);
-        const team = teamById.get(p.teamId);
-        return `
-          <tr data-player="${p.playerId}" class="clickable">
-            <td>${player ? player.firstName + ' ' + player.lastName : p.playerId}</td>
-            <td>${team ? team.abbr : ''}</td>
-            <td>${p.G}</td><td>${p.GS}</td><td>${formatIp(p)}</td>
-            <td>${p.H}</td><td>${p.R}</td><td>${p.ER}</td>
-            <td>${p.BB}</td><td>${p.SO}</td><td>${p.HR}</td>
-            <td>${formatEra(era(p))}</td>
-            <td>${formatWhip(whip(p))}</td>
-            <td>${formatSigned(p.WPA, 2)}</td>
-          </tr>`;
-      }).join('')}
-      </tbody>`;
-    table.querySelectorAll<HTMLTableRowElement>('tr.clickable').forEach((tr) => {
-      tr.addEventListener('click', () => {
-        const id = tr.dataset['player'];
-        if (id) onPlayerClick(id);
-      });
-    });
-    wrap.appendChild(table);
+    wrap.appendChild(
+      buildSortableLeaderboard(
+        pitchingRows,
+        PITCHING_COLUMNS,
+        { key: 'ERA', dir: 'asc' },
+        (p) => {
+          const player = ctx.playerIndex.get(p.playerId);
+          const team = teamById.get(p.teamId);
+          const name = player ? `${player.firstName} ${player.lastName}` : p.playerId;
+          return {
+            playerId: p.playerId,
+            nameCell: playerNameLink(name, p.playerId),
+            teamCell: team ? team.abbr : '',
+          };
+        },
+        onPlayerClick,
+      ),
+    );
   }
 
   host.appendChild(wrap);
+};
+
+const buildSortableLeaderboard = <L extends { playerId: string; teamId: string }>(
+  rows: readonly L[],
+  columns: readonly LeaderboardCol<L>[],
+  initialSort: SortState,
+  describe: (line: L) => { playerId: string; nameCell: string; teamCell: string },
+  onPlayerClick: (id: string) => void,
+): HTMLElement => {
+  const wrap = document.createElement('div');
+  wrap.className = 'leaderboard';
+  const sort: SortState = { ...initialSort };
+
+  const draw = () => {
+    const col = columns.find((c) => c.key === sort.key)!;
+    const sorted = [...rows].sort((a, b) => {
+      const va = col.value(a);
+      const vb = col.value(b);
+      return sort.dir === 'asc' ? va - vb : vb - va;
+    }).slice(0, 12);
+
+    const headerCells = columns.map((c) => {
+      const isActive = c.key === sort.key;
+      const arrow = isActive ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+      return `<th data-col="${c.key}" class="sortable ${isActive ? 'active-sort' : ''}">${c.label}${arrow}</th>`;
+    }).join('');
+
+    wrap.innerHTML = `
+      <table class="sortable-table">
+        <thead>
+          <tr>
+            <th>Player</th>
+            <th>Team</th>
+            ${headerCells}
+          </tr>
+        </thead>
+        <tbody>
+        ${sorted.map((line) => {
+          const d = describe(line);
+          const cells = columns.map((c) => {
+            const txt = c.format ? c.format(line) : String(c.value(line));
+            return `<td>${txt}</td>`;
+          }).join('');
+          return `<tr data-player="${d.playerId}">
+            <td>${d.nameCell}</td>
+            <td>${d.teamCell}</td>
+            ${cells}
+          </tr>`;
+        }).join('')}
+        </tbody>
+      </table>`;
+
+    wrap.querySelectorAll<HTMLTableHeaderCellElement>('th[data-col]').forEach((th) => {
+      th.addEventListener('click', () => {
+        const colKey = th.dataset['col']!;
+        const colDef = columns.find((c) => c.key === colKey);
+        if (!colDef) return;
+        if (sort.key === colKey) {
+          sort.dir = sort.dir === 'asc' ? 'desc' : 'asc';
+        } else {
+          sort.key = colKey;
+          sort.dir = colDef.defaultDir;
+        }
+        draw();
+      });
+    });
+    wrap.querySelectorAll<HTMLTableRowElement>('tbody tr[data-player]').forEach((tr) => {
+      // Clicking a row navigates, but only when the click didn't land on the
+      // dedicated player-link button (which the orchestrator already wires).
+      tr.addEventListener('click', (ev) => {
+        const target = ev.target as HTMLElement;
+        if (target.closest('[data-player-link]')) return;
+        const id = tr.dataset['player'];
+        if (id) onPlayerClick(id);
+      });
+      tr.classList.add('clickable');
+    });
+  };
+
+  draw();
+  return wrap;
 };
