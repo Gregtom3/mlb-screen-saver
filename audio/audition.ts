@@ -9,6 +9,7 @@ import {
   hardHitWoosh,
   foulTick,
   organStinger,
+  testTone,
   ensureAudio,
   setMuted,
   isMuted,
@@ -151,6 +152,14 @@ stopBtn.addEventListener('click', () => {
   status.textContent = 'stopped';
 });
 
+const tonebtn = document.createElement('button');
+tonebtn.textContent = '🔔 test tone (440Hz)';
+tonebtn.addEventListener('click', () => {
+  const { ctx } = ensureAudio();
+  testTone(0);
+  status.textContent = `test tone — ctx.state=${ctx.state} sampleRate=${ctx.sampleRate} vol=${getVolume().toFixed(2)} muted=${isMuted()}`;
+});
+
 const muteBtn = document.createElement('button');
 function syncMuteLabel(): void {
   muteBtn.textContent = isMuted() ? '🔇 unmute' : '🔊 mute';
@@ -177,7 +186,7 @@ volWrap.append(vol);
 
 const controls = document.createElement('div');
 controls.className = 'controls';
-controls.append(playAllBtn, stopBtn, muteBtn, volWrap);
+controls.append(playAllBtn, stopBtn, tonebtn, muteBtn, volWrap);
 
 root.append(controls, status, list);
 
