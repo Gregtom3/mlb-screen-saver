@@ -10,4 +10,7 @@ export {
   foulTick,
   organStinger,
   testTone,
+  slide,
+  strike3Call,
+  batSnap,
 } from './sfx.js';
