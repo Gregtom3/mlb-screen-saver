@@ -8,6 +8,15 @@ import {
   lerpPoint,
 } from './field-geometry.js';
 import type { FieldPoint, ScenePlayer, SceneState } from './types.js';
+import {
+  buildAllPlayChoreos,
+  buildFielderIdsByPos,
+  ballStateForChoreo,
+  primaryFielderPositionAtTime,
+  relayFielderPositionAtTime,
+  type FielderPos,
+  type PlayChoreo,
+} from './choreo.js';
 
 // =========================================================================
 // buildScene — pure (events, simTime, ctx) → SceneState.
@@ -136,6 +145,20 @@ export const buildScene = (
   simTime: number,
   ctx: SceneContext,
 ): SceneState => {
+  // Per-side fielder lookup, used by the choreo to pick a responsible fielder
+  // when a ball is hit. Computed once per call.
+  const homeFielderIds = buildFielderIdsByPos(
+    ctx.input.home.battingOrder,
+    ctx.input.home.startingPitcherId,
+    ctx.input.playerIndex,
+  );
+  const awayFielderIds = buildFielderIdsByPos(
+    ctx.input.away.battingOrder,
+    ctx.input.away.startingPitcherId,
+    ctx.input.playerIndex,
+  );
+  const choreos = buildAllPlayChoreos(events, { home: homeFielderIds, away: awayFielderIds });
+
   // Game-level accumulators.
   let inning = 1;
   let half: 'top' | 'bottom' = 'top';
@@ -161,6 +184,7 @@ export const buildScene = (
 
   let lastPitch: PitchInProgress | null = null;
   let lastContact: ContactInProgress | null = null;
+  let lastContactT: number | null = null; // for choreo lookup
 
   for (const ev of events) {
     if (ev.t > simTime) break;
@@ -181,10 +205,16 @@ export const buildScene = (
       }
       case 'contact': {
         lastContact = { t: ev.t, path: ev.ballPath };
+        lastContactT = ev.t;
         break;
       }
       case 'baserunner': {
-        runnerLatest.set(ev.runnerId, { from: ev.from, to: ev.to, out: ev.out, t: ev.t });
+        // Use choreo override start-time if available — handles tag-ups
+        // (sac fly waits for catch) and play-aware runner pacing.
+        const choreo = lastContactT !== null ? choreos.get(lastContactT) : undefined;
+        const override = choreo?.runnerOverrides.get(ev.runnerId);
+        const startT = override?.startT ?? ev.t;
+        runnerLatest.set(ev.runnerId, { from: ev.from, to: ev.to, out: ev.out, t: startT });
         // Update base occupancy: vacate `from`, occupy `to` (unless out or scoring).
         if (ev.from === 1) bases.first = null;
         else if (ev.from === 2) bases.second = null;
@@ -281,14 +311,32 @@ export const buildScene = (
     : null;
   if (catcher) fielders.push(catcher);
 
+  // Active choreo for any in-progress play.
+  const activeChoreo: PlayChoreo | undefined =
+    lastContactT !== null ? choreos.get(lastContactT) : undefined;
+  const choreoActive = activeChoreo !== undefined && simTime < activeChoreo.endT;
+  const primaryFielderId = choreoActive ? activeChoreo.primaryFielder?.playerId : undefined;
+  const relayFielderId = choreoActive ? activeChoreo.relayFielder?.playerId : undefined;
+  const primaryFielderPos = choreoActive
+    ? primaryFielderPositionAtTime(activeChoreo, simTime)
+    : null;
+  const relayFielderPos = choreoActive
+    ? relayFielderPositionAtTime(activeChoreo, simTime)
+    : null;
+
   // Other 7 defensive positions, mapped from lineup primary positions.
+  // The primary fielder for the active play (if any) gets its position
+  // overridden to its choreographed location instead of its home post.
   for (const pos of ['1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF'] as const) {
     const p = pickByPrimary(ctx.input.playerIndex, fieldingLineupIds, pos);
     if (!p) continue;
+    let position = fielderPositionFor(pos);
+    if (p.id === primaryFielderId && primaryFielderPos) position = primaryFielderPos;
+    else if (p.id === relayFielderId && relayFielderPos) position = relayFielderPos;
     fielders.push({
       id: p.id,
       role: 'fielder',
-      position: fielderPositionFor(pos),
+      position,
       primaryColor: fieldingColors.primary,
       secondaryColor: fieldingColors.secondary,
     });
@@ -329,35 +377,18 @@ export const buildScene = (
   let ballVisible = phase === 'live';
   let ballInFlight = false;
 
-  if (lastContact && (!lastPitch || lastContact.t >= lastPitch.t)) {
-    // Post-contact flight. Hangtime drives the trajectory shape; the visual
-    // duration is hangtime × BALL_TIME_SCALE so the eye can track the arc.
-    const path = lastContact.path;
-    const physicsTicks = path.hangTimeSec + (path.launchAngleDeg <= 0 ? GROUNDER_EXTRA_TICKS / BALL_TIME_SCALE : 0);
-    const totalTicks = physicsTicks * BALL_TIME_SCALE;
-    const elapsed = Math.max(0, simTime - lastContact.t);
-    const frac = totalTicks > 0 ? Math.min(1, elapsed / totalTicks) : 1;
-    ballPos = {
-      x: path.landingX * frac,
-      y: path.landingY * frac,
-    };
-    if (path.launchAngleDeg <= 0) {
-      // Grounders skip along the dirt — keep height at zero.
-      ballHeight = 0;
+  if (lastContact && choreoActive && activeChoreo) {
+    // Choreo drives the full play: ball flight → fielder pickup → throw.
+    const ballState = ballStateForChoreo(activeChoreo, simTime);
+    if (ballState) {
+      ballPos = ballState.position;
+      ballHeight = ballState.heightFt;
+      ballVisible = ballState.visible;
+      ballInFlight = ballState.inFlight;
     } else {
-      // z(t) = v_z·t − ½g·t² with v_z chosen so z(hangtime) = 0.
-      // We compute z against PHYSICS time (elapsed / BALL_TIME_SCALE) so the
-      // parabola returns to ground exactly at frac=1, just stretched out.
-      const G = 32.2;
-      const vZ = (G * path.hangTimeSec) / 2;
-      const physicsElapsed = elapsed / BALL_TIME_SCALE;
-      ballHeight = Math.max(
-        0,
-        vZ * physicsElapsed - 0.5 * G * physicsElapsed * physicsElapsed,
-      );
+      ballVisible = false;
+      ballInFlight = false;
     }
-    ballInFlight = frac < 1;
-    ballVisible = frac < 1;
   } else if (lastPitch) {
     const elapsed = simTime - lastPitch.t;
     const frac = Math.max(0, Math.min(1, elapsed / PITCH_FLIGHT_TICKS));

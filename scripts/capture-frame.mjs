@@ -50,7 +50,10 @@ await wait(5000);
 
 const outBase = OUT.endsWith('.png') ? OUT.slice(0, -4) : OUT;
 const seqMode = process.argv.includes('--sequence');
-const captures = seqMode
+const burstMode = process.argv.includes('--burst');
+const captures = burstMode
+  ? Array.from({ length: 24 }, (_, i) => ({ delay: i === 0 ? 0 : 800, suffix: `-b${String(i).padStart(2, '0')}` }))
+  : seqMode
   ? [
       { delay: 0, suffix: '-01-early' },
       { delay: 6000, suffix: '-02-mid' },
