@@ -1,137 +1,104 @@
 import type { Player, PlayerId } from '../world/types.js';
-import type { AtBatOutcome, BallPath, SimEvent } from '../sim/types.js';
+import type { AtBatOutcome, SimEvent } from '../sim/types.js';
 import {
   HOME_PLATE,
   FIRST_BASE,
   SECOND_BASE,
   THIRD_BASE,
   FIELDER_HOME_POSITIONS,
+  PITCHERS_MOUND,
 } from './field-geometry.js';
 import type { FieldPoint } from './types.js';
 
 // =========================================================================
 // Per-contact play choreography.
 //
-// The /sim event log captures *what happened* (outcome, runner movements,
-// ball trajectory) but not the moment-to-moment *visual timing* of how the
-// play unfolds — when the fielder reaches the ball, when the throw goes,
-// when each runner starts. The renderer synthesizes that timing here so
-// every visual is grounded in the same canonical event log.
+// Synthesizes a richer visualization on top of the canonical SimEvent log:
+//   - which fielder fields the ball
+//   - which fielder COVERS the throw target base
+//   - ball trajectory: home → landing → fielder pickup → throw to base →
+//     (relay if DP) → throw back to the mound
+//   - timed fielder motions: approach, hold at base, return home
+//   - per-runner start times so sac-fly tag-ups wait for the catch
 //
-// The output is a Map<contactT, PlayChoreo>. A frame at simTime t looks up
-// the most recent contact ≤ t, walks its choreo segments, and renders ball,
-// fielder, and runner positions accordingly.
+// Determinism is preserved — choreo is a pure function of the event log.
 // =========================================================================
 
-export type FielderPos = '1B' | '2B' | '3B' | 'SS' | 'LF' | 'CF' | 'RF';
+export type FielderPos = 'P' | 'C' | '1B' | '2B' | '3B' | 'SS' | 'LF' | 'CF' | 'RF';
 
-const ALL_FIELDER_POSITIONS: readonly FielderPos[] = ['1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF'];
-const INFIELD_POSITIONS: readonly FielderPos[] = ['1B', '2B', '3B', 'SS'];
-const OUTFIELD_POSITIONS: readonly FielderPos[] = ['LF', 'CF', 'RF'];
+const ALL_FIELDER_POSITIONS: readonly FielderPos[] = [
+  'P', 'C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF',
+];
+const INFIELD_PRIMARY: readonly FielderPos[] = ['1B', '2B', '3B', 'SS', 'P'];
+const OUTFIELD_PRIMARY: readonly FielderPos[] = ['LF', 'CF', 'RF'];
 
-// Animation pacing — sim ticks ≈ seconds.
-export const BALL_TIME_SCALE = 3; // visual flight is 3× physics
-const FIELDING_PICKUP_TICKS = 6;
-const THROW_TICKS = 8;
-const RELAY_TICKS = 7; // 2B → 1B for the back end of a double play
+// =========== Pacing constants (sim ticks ≈ seconds) =====================
+
+export const BALL_TIME_SCALE = 6;     // visual ball flight is 6× the physics
+const FIELDING_PICKUP_TICKS = 8;       // fielder cradles ball + winds up
+const THROW_TICKS = 10;                // throw to a base
+const RELAY_TICKS = 8;                 // 2B → 1B for DP back end
+const RETURN_TO_MOUND_TICKS = 12;      // ball back to pitcher
+const POST_PLAY_HOLD_TICKS = 12;       // visual settle pause so the result sinks in
+const FIELDER_TRAVEL_LEAD_TICKS = 4;   // coverer arrives at base before ball
+const FIELDER_RETURN_TICKS = 14;       // back to home
+
+// =========== Coverage map ==============================================
+
+// Per-base coverage priority. The first available position who isn't already
+// the primary fielder (and isn't already used as the relay coverer) covers
+// the bag. Pitcher is included for 1B coverage (3-1 / 1-3 putouts).
+const COVERAGE: Record<0 | 1 | 2 | 3, readonly FielderPos[]> = {
+  0: ['C'],
+  1: ['1B', '2B', 'P', '3B'],
+  2: ['2B', 'SS'],
+  3: ['3B', 'SS'],
+};
+
+// =========== Public types ==============================================
 
 interface BallSegment {
   readonly startT: number;
   readonly endT: number;
   readonly from: FieldPoint;
   readonly to: FieldPoint;
-  readonly arc: 'parabola' | 'flat' | 'rolling';
-  // Physics hangtime for parabola segments — used to scale z(t) to land at
-  // the segment's end regardless of how much we stretch the visual duration.
+  readonly arc: 'parabola' | 'flat' | 'rolling' | 'low-throw';
   readonly physicsHangTimeSec?: number;
+}
+
+export interface FielderRole {
+  readonly playerId: PlayerId;
+  readonly fielderPos: FielderPos;
+  readonly fromPos: FieldPoint;
+  readonly toPos: FieldPoint;
+  readonly approachStartT: number;
+  readonly approachEndT: number;
+  readonly returnStartT: number;
+  readonly returnEndT: number;
 }
 
 export interface PlayChoreo {
   readonly contactT: number;
+  // Action ends — last ball segment finishes. Used for runner tag-up timing.
+  readonly actionEndT: number;
+  // Choreo end including post-play settle. Renderer holds visuals stable
+  // until this point so the viewer can read the result before next pitch.
   readonly endT: number;
   readonly ballSegments: readonly BallSegment[];
-  // The fielder primarily handling the ball — moves from home toward landing
-  // during the flight, holds during the pickup window.
-  readonly primaryFielder?: {
-    readonly playerId: PlayerId;
-    readonly fielderPos: FielderPos;
-    readonly fromPos: FieldPoint;
-    readonly toPos: FieldPoint;
-    readonly approachStartT: number;
-    readonly approachEndT: number;
-  };
-  // Optional second fielder, used for double-play relay (covers 1B for the
-  // back end of the throw).
-  readonly relayFielder?: {
-    readonly playerId: PlayerId;
-    readonly fielderPos: FielderPos;
-    readonly fromPos: FieldPoint;
-    readonly toPos: FieldPoint;
-    readonly startT: number;
-    readonly endT: number;
-  };
-  // Per-runner overrides: when their motion starts and how long each base
-  // segment takes. Keyed by runnerId. Runners not in the map use defaults.
+  readonly fielderRoles: readonly FielderRole[]; // primary, coverer(s)
   readonly runnerOverrides: ReadonlyMap<
     PlayerId,
     { readonly startT: number; readonly perBaseTicks: number }
   >;
 }
 
+// =========== Helpers ====================================================
+
 const distSq = (a: FieldPoint, b: FieldPoint) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
-
-const pickClosestFielder = (
-  landing: FieldPoint,
-  fielderIdsByPos: ReadonlyMap<FielderPos, PlayerId>,
-  candidates: readonly FielderPos[],
-): { pos: FielderPos; playerId: PlayerId; homePos: FieldPoint } => {
-  let bestPos: FielderPos = candidates[0]!;
-  let bestDist = Infinity;
-  for (const pos of candidates) {
-    const home = FIELDER_HOME_POSITIONS[pos];
-    const d = distSq(landing, home);
-    if (d < bestDist) {
-      bestDist = d;
-      bestPos = pos;
-    }
-  }
-  const playerId = fielderIdsByPos.get(bestPos);
-  if (!playerId) throw new Error(`No fielder at ${bestPos}`);
-  return { pos: bestPos, playerId, homePos: FIELDER_HOME_POSITIONS[bestPos] };
-};
-
-const throwTargetFor = (outcome: AtBatOutcome): { base: 0 | 1 | 2 | 3; pos: FieldPoint } | null => {
-  switch (outcome) {
-    case 'groundout':
-    case 'reached-on-error':
-      return { base: 1, pos: FIRST_BASE };
-    case 'fielders-choice':
-    case 'double-play':
-      return { base: 2, pos: SECOND_BASE };
-    case 'sac-fly':
-      return { base: 0, pos: HOME_PLATE };
-    case 'single':
-      return { base: 2, pos: SECOND_BASE };
-    case 'double':
-      return { base: 3, pos: THIRD_BASE };
-    case 'triple':
-      return { base: 3, pos: THIRD_BASE };
-    // No throws — caught in air or out of play.
-    case 'flyout':
-    case 'lineout':
-    case 'popout':
-    case 'sac-bunt':
-    case 'home-run':
-    case 'triple-play':
-      return null;
-    // No contact:
-    case 'walk':
-    case 'hit-by-pitch':
-    case 'strikeout-looking':
-    case 'strikeout-swinging':
-      return null;
-  }
-};
+const lerp = (a: FieldPoint, b: FieldPoint, t: number): FieldPoint => ({
+  x: a.x + (b.x - a.x) * t,
+  y: a.y + (b.y - a.y) * t,
+});
 
 const baseFor = (b: 0 | 1 | 2 | 3): FieldPoint => {
   if (b === 0) return HOME_PLATE;
@@ -141,11 +108,96 @@ const baseFor = (b: 0 | 1 | 2 | 3): FieldPoint => {
 };
 
 const isOutfieldHit = (landing: FieldPoint): boolean => landing.y > 130;
-const isCaught = (outcome: AtBatOutcome): boolean =>
+const isCaughtInAir = (outcome: AtBatOutcome): boolean =>
   outcome === 'flyout' ||
   outcome === 'lineout' ||
   outcome === 'popout' ||
   outcome === 'sac-fly';
+
+const pickClosestFielder = (
+  landing: FieldPoint,
+  fielderIdsByPos: ReadonlyMap<FielderPos, PlayerId>,
+  candidates: readonly FielderPos[],
+): { pos: FielderPos; playerId: PlayerId; homePos: FieldPoint } => {
+  let bestPos: FielderPos | null = null;
+  let bestDist = Infinity;
+  for (const pos of candidates) {
+    if (!fielderIdsByPos.has(pos)) continue;
+    const home = FIELDER_HOME_POSITIONS[pos];
+    const d = distSq(landing, home);
+    if (d < bestDist) {
+      bestDist = d;
+      bestPos = pos;
+    }
+  }
+  if (!bestPos) {
+    // Fallback: take the first candidate that exists.
+    for (const pos of candidates) {
+      if (fielderIdsByPos.has(pos)) {
+        bestPos = pos;
+        break;
+      }
+    }
+  }
+  if (!bestPos) throw new Error(`pickClosestFielder: no available fielder`);
+  return {
+    pos: bestPos,
+    playerId: fielderIdsByPos.get(bestPos)!,
+    homePos: FIELDER_HOME_POSITIONS[bestPos],
+  };
+};
+
+const pickCoverer = (
+  base: 0 | 1 | 2 | 3,
+  fielderIdsByPos: ReadonlyMap<FielderPos, PlayerId>,
+  excludePositions: ReadonlySet<FielderPos>,
+): { pos: FielderPos; playerId: PlayerId; homePos: FieldPoint } | null => {
+  for (const pos of COVERAGE[base]) {
+    if (excludePositions.has(pos)) continue;
+    const playerId = fielderIdsByPos.get(pos);
+    if (playerId) {
+      return { pos, playerId, homePos: FIELDER_HOME_POSITIONS[pos] };
+    }
+  }
+  // Fallback: any covering position even if also excluded (e.g., DP odd cases).
+  for (const pos of COVERAGE[base]) {
+    const playerId = fielderIdsByPos.get(pos);
+    if (playerId) {
+      return { pos, playerId, homePos: FIELDER_HOME_POSITIONS[pos] };
+    }
+  }
+  return null;
+};
+
+const throwTargetFor = (outcome: AtBatOutcome): { base: 0 | 1 | 2 | 3 } | null => {
+  switch (outcome) {
+    case 'groundout':
+    case 'reached-on-error':
+      return { base: 1 };
+    case 'fielders-choice':
+    case 'double-play':
+      return { base: 2 };
+    case 'sac-fly':
+      return { base: 0 };
+    case 'single':
+      return { base: 2 };
+    case 'double':
+      return { base: 3 };
+    case 'triple':
+      return { base: 3 };
+    case 'flyout':
+    case 'lineout':
+    case 'popout':
+    case 'sac-bunt':
+    case 'home-run':
+    case 'triple-play':
+    case 'walk':
+    case 'hit-by-pitch':
+    case 'strikeout-looking':
+    case 'strikeout-swinging':
+      return null;
+  }
+};
 
 interface BuildContext {
   readonly fielderIdsByPos: ReadonlyMap<FielderPos, PlayerId>;
@@ -161,87 +213,140 @@ const buildOneChoreo = (
   const path = contactEvent.ballPath;
   const landing: FieldPoint = { x: path.landingX, y: path.landingY };
 
-  // Phase 1: ball in flight (parabola or rolling).
-  const flightTicks = Math.max(3, path.hangTimeSec * BALL_TIME_SCALE);
+  const flightTicks = Math.max(6, path.hangTimeSec * BALL_TIME_SCALE);
   const flightEndT = contactT + flightTicks;
 
-  // Phase 2: fielding window — ball at landing, fielder picking it up.
-  const pickupEndT = flightEndT + FIELDING_PICKUP_TICKS;
-
-  // Determine primary fielder.
-  const candidates = isOutfieldHit(landing) ? OUTFIELD_POSITIONS : INFIELD_POSITIONS;
+  // Primary fielder — the one who fields the ball.
+  const candidates = isOutfieldHit(landing) ? OUTFIELD_PRIMARY : INFIELD_PRIMARY;
   const primary = pickClosestFielder(landing, ctx.fielderIdsByPos, candidates);
 
-  // Throw target.
-  const throwTarget = throwTargetFor(outcome);
-
-  // Phase 3: throw to target base (if any).
   const segments: BallSegment[] = [];
-  const flightSeg: BallSegment =
-    path.launchAngleDeg > 0
-      ? {
-          startT: contactT,
-          endT: flightEndT,
-          from: HOME_PLATE,
-          to: landing,
-          arc: 'parabola',
-          physicsHangTimeSec: path.hangTimeSec,
-        }
-      : {
-          startT: contactT,
-          endT: flightEndT,
-          from: HOME_PLATE,
-          to: landing,
-          arc: 'rolling',
-        };
-  segments.push(flightSeg);
+  const fielderRoles: FielderRole[] = [];
+  const usedPositions = new Set<FielderPos>([primary.pos]);
 
-  let endT = pickupEndT;
-  let relayFielder: PlayChoreo['relayFielder'];
+  // Phase 1: ball flight to landing.
+  if (path.launchAngleDeg > 0) {
+    segments.push({
+      startT: contactT,
+      endT: flightEndT,
+      from: HOME_PLATE,
+      to: landing,
+      arc: 'parabola',
+      physicsHangTimeSec: path.hangTimeSec,
+    });
+  } else {
+    segments.push({
+      startT: contactT,
+      endT: flightEndT,
+      from: HOME_PLATE,
+      to: landing,
+      arc: 'rolling',
+    });
+  }
+
+  // For caught-in-air outcomes (flyouts, popouts, lineouts, sac-flies), the
+  // primary fielder catches the ball IN THE AIR — there's no on-ground pickup.
+  // Otherwise, ball sits at landing during a pickup window.
+  const caught = isCaughtInAir(outcome);
+  const pickupEndT = caught ? flightEndT : flightEndT + FIELDING_PICKUP_TICKS;
+
+  // Phase 2: throws.
+  let actionEndT = pickupEndT;
+  const throwTarget = throwTargetFor(outcome);
+  let lastBallPos: FieldPoint = landing;
+  let finalCoverer: { pos: FielderPos; playerId: PlayerId; homePos: FieldPoint } | null = null;
 
   if (throwTarget) {
-    // Throw segment.
-    const throwEndT = pickupEndT + THROW_TICKS;
-    segments.push({
-      startT: pickupEndT,
-      endT: throwEndT,
-      from: landing,
-      to: throwTarget.pos,
-      arc: 'flat',
-    });
-    endT = throwEndT;
-
-    // Double-play relay — second throw from 2B to 1B.
-    if (outcome === 'double-play') {
-      const relayStart = throwEndT;
-      const relayEnd = relayStart + RELAY_TICKS;
+    // Pick the coverer for this base.
+    const coverer = pickCoverer(throwTarget.base, ctx.fielderIdsByPos, usedPositions);
+    if (coverer) {
+      usedPositions.add(coverer.pos);
+      finalCoverer = coverer;
+      // Coverer movement: arrive at the base just before the throw arrives.
+      const throwStartT = pickupEndT;
+      const throwEndT = throwStartT + THROW_TICKS;
+      const coverArrive = throwEndT - FIELDER_TRAVEL_LEAD_TICKS;
+      fielderRoles.push({
+        playerId: coverer.playerId,
+        fielderPos: coverer.pos,
+        fromPos: coverer.homePos,
+        toPos: baseFor(throwTarget.base),
+        approachStartT: contactT,
+        approachEndT: coverArrive,
+        returnStartT: throwEndT + 4,
+        returnEndT: throwEndT + 4 + FIELDER_RETURN_TICKS,
+      });
+      // Ball segment for the throw.
       segments.push({
-        startT: relayStart,
-        endT: relayEnd,
-        from: SECOND_BASE,
-        to: FIRST_BASE,
+        startT: throwStartT,
+        endT: throwEndT,
+        from: landing,
+        to: baseFor(throwTarget.base),
         arc: 'flat',
       });
-      const relayId = ctx.fielderIdsByPos.get('2B');
-      if (relayId) {
-        relayFielder = {
-          playerId: relayId,
-          fielderPos: '2B',
-          fromPos: FIELDER_HOME_POSITIONS['2B'],
-          toPos: SECOND_BASE,
-          startT: pickupEndT - 2,
-          endT: throwEndT,
-        };
+      lastBallPos = baseFor(throwTarget.base);
+      actionEndT = throwEndT;
+
+      // DP relay: 2B → 1B. The 2B coverer (who just caught the force throw)
+      // throws to a 1B coverer.
+      if (outcome === 'double-play') {
+        const relayCoverer = pickCoverer(1, ctx.fielderIdsByPos, usedPositions);
+        if (relayCoverer) {
+          usedPositions.add(relayCoverer.pos);
+          finalCoverer = relayCoverer;
+          const relayStartT = throwEndT;
+          const relayEndT = relayStartT + RELAY_TICKS;
+          const relayArrive = relayEndT - FIELDER_TRAVEL_LEAD_TICKS;
+          fielderRoles.push({
+            playerId: relayCoverer.playerId,
+            fielderPos: relayCoverer.pos,
+            fromPos: relayCoverer.homePos,
+            toPos: FIRST_BASE,
+            approachStartT: contactT,
+            approachEndT: relayArrive,
+            returnStartT: relayEndT + 4,
+            returnEndT: relayEndT + 4 + FIELDER_RETURN_TICKS,
+          });
+          segments.push({
+            startT: relayStartT,
+            endT: relayEndT,
+            from: SECOND_BASE,
+            to: FIRST_BASE,
+            arc: 'flat',
+          });
+          lastBallPos = FIRST_BASE;
+          actionEndT = relayEndT;
+        }
       }
-      endT = relayEnd;
     }
   }
 
-  // Fielder approach — start at contact, arrive when ball lands.
-  const approachStartT = contactT;
-  const approachEndT = isCaught(outcome)
-    ? flightEndT // caught on the descent — fielder is at landing as ball arrives
-    : Math.min(flightEndT, contactT + flightTicks);
+  // Phase 3: ball back to the mound (skip on HR — ball is gone).
+  if (outcome !== 'home-run') {
+    const returnStartT = actionEndT + 2;
+    const returnEndT = returnStartT + RETURN_TO_MOUND_TICKS;
+    segments.push({
+      startT: returnStartT,
+      endT: returnEndT,
+      from: lastBallPos,
+      to: PITCHERS_MOUND,
+      arc: 'low-throw',
+    });
+    actionEndT = returnEndT;
+  }
+
+  // Primary fielder role — approach + hold + return.
+  // Caught-in-air: arrives at landing just as ball does.
+  fielderRoles.push({
+    playerId: primary.playerId,
+    fielderPos: primary.pos,
+    fromPos: primary.homePos,
+    toPos: landing,
+    approachStartT: contactT,
+    approachEndT: flightEndT,
+    returnStartT: pickupEndT + 4,
+    returnEndT: pickupEndT + 4 + FIELDER_RETURN_TICKS,
+  });
 
   // Per-runner timing overrides.
   const runnerOverrides = new Map<
@@ -251,36 +356,28 @@ const buildOneChoreo = (
   for (const ev of baserunnerEvents) {
     let startT = contactT;
     const perBaseTicks = 7;
-    // Sac fly: runner from 3rd waits for the catch to tag up.
     if (outcome === 'sac-fly' && ev.from === 3 && ev.to === 0) {
       startT = flightEndT;
     }
-    // Caught fly with runners on base — they hold and don't move; their
-    // sim baserunner events should not exist for non-tag-up cases. If they
-    // do (e.g. defensive choices), keep at contact time.
     runnerOverrides.set(ev.runnerId, { startT, perBaseTicks });
   }
 
+  // End of choreo: action complete + a settle hold so the viewer reads the play.
+  const endT = actionEndT + POST_PLAY_HOLD_TICKS;
+
   return {
     contactT,
+    actionEndT,
     endT,
     ballSegments: segments,
-    primaryFielder: {
-      playerId: primary.playerId,
-      fielderPos: primary.pos,
-      fromPos: primary.homePos,
-      toPos: landing,
-      approachStartT,
-      approachEndT,
-    },
-    ...(relayFielder ? { relayFielder } : {}),
+    fielderRoles,
     runnerOverrides,
   };
 };
 
-// Walk the event log once and produce the per-contact map. For each
-// contact event we look ahead to find the matching atBatEnd's outcome and
-// collect the baserunner events that fired between them.
+// Walk the event log once, build a Map<contactT, PlayChoreo>. Tracks
+// half-inning + active pitcher per side so coverer/fielder lookups use the
+// correct side's defense.
 export const buildAllPlayChoreos = (
   events: readonly SimEvent[],
   fielderIdsByPosBySide: {
@@ -299,7 +396,6 @@ export const buildAllPlayChoreos = (
     }
     if (ev.kind !== 'contact') continue;
 
-    // Find the matching atBatEnd and any baserunner events between them.
     let outcome: AtBatOutcome | null = null;
     const baserunners: Extract<SimEvent, { kind: 'baserunner' }>[] = [];
     for (let j = i + 1; j < events.length; j++) {
@@ -314,101 +410,92 @@ export const buildAllPlayChoreos = (
     }
     if (!outcome) continue;
 
-    // Fielding side is opposite the batting side.
     const fieldingSide = half === 'top' ? 'home' : 'away';
     const fielderIds = fielderIdsByPosBySide[fieldingSide];
-
-    out.set(
-      ev.t,
-      buildOneChoreo(ev, outcome, baserunners, { fielderIdsByPos: fielderIds }),
-    );
+    out.set(ev.t, buildOneChoreo(ev, outcome, baserunners, { fielderIdsByPos: fielderIds }));
   }
   return out;
 };
 
-// Compute ball position + altitude at simTime given a choreo.
+// =========== Per-frame queries =========================================
+
 export const ballStateForChoreo = (
   choreo: PlayChoreo,
   simTime: number,
 ): { position: FieldPoint; heightFt: number; visible: boolean; inFlight: boolean } | null => {
   if (simTime < choreo.contactT) return null;
-  if (simTime >= choreo.endT) {
-    return null;
-  }
+  if (simTime >= choreo.endT) return null;
+
+  // Walk segments in order. Between segments the ball is held at the
+  // previous segment's `to` point (fielder cradling, batter taking position).
+  let prevTo: FieldPoint | null = null;
   for (const seg of choreo.ballSegments) {
     if (simTime < seg.startT) {
-      // Between segments — ball is at the previous segment's `to` point,
-      // sitting in the fielder's hands during pickup.
-      return {
-        position: seg.from,
-        heightFt: 0,
-        visible: true,
-        inFlight: false,
-      };
+      if (prevTo) {
+        return { position: prevTo, heightFt: 0, visible: true, inFlight: false };
+      }
+      return { position: seg.from, heightFt: 0, visible: true, inFlight: false };
     }
     if (simTime <= seg.endT) {
       const dur = seg.endT - seg.startT;
       const frac = dur > 0 ? Math.min(1, (simTime - seg.startT) / dur) : 1;
-      const pos: FieldPoint = {
-        x: seg.from.x + (seg.to.x - seg.from.x) * frac,
-        y: seg.from.y + (seg.to.y - seg.from.y) * frac,
-      };
+      const pos = lerp(seg.from, seg.to, frac);
       let heightFt = 0;
       if (seg.arc === 'parabola' && seg.physicsHangTimeSec) {
         const G = 32.2;
         const vZ = (G * seg.physicsHangTimeSec) / 2;
-        const physicsElapsed = (frac * seg.physicsHangTimeSec); // map visual frac to physics time
+        const physicsElapsed = frac * seg.physicsHangTimeSec;
         heightFt = Math.max(0, vZ * physicsElapsed - 0.5 * G * physicsElapsed * physicsElapsed);
       } else if (seg.arc === 'flat') {
-        // Throws have a small arc.
         heightFt = 8 * Math.sin(frac * Math.PI);
+      } else if (seg.arc === 'low-throw') {
+        heightFt = 5 * Math.sin(frac * Math.PI);
       }
       return {
         position: pos,
         heightFt,
         visible: true,
-        inFlight: seg.arc !== 'rolling' || frac < 1,
+        inFlight: seg.arc !== 'rolling',
       };
     }
+    prevTo = seg.to;
+  }
+  // After the last segment but before endT (post-play hold) — ball at mound.
+  if (prevTo) {
+    return { position: prevTo, heightFt: 0, visible: false, inFlight: false };
   }
   return null;
 };
 
-// Compute the primary fielder's position at simTime.
-export const primaryFielderPositionAtTime = (
-  choreo: PlayChoreo,
-  simTime: number,
-): FieldPoint | null => {
-  if (!choreo.primaryFielder) return null;
-  const f = choreo.primaryFielder;
-  if (simTime <= f.approachStartT) return f.fromPos;
-  if (simTime >= f.approachEndT) {
-    // After approach: fielder stays at toPos until the play resolves, then
-    // returns to home. Simple: stay at toPos for the remainder of the play.
-    return f.toPos;
+const positionForRole = (role: FielderRole, simTime: number): FieldPoint => {
+  if (simTime <= role.approachStartT) return role.fromPos;
+  if (simTime <= role.approachEndT) {
+    const dur = role.approachEndT - role.approachStartT;
+    const frac = dur > 0 ? (simTime - role.approachStartT) / dur : 1;
+    return lerp(role.fromPos, role.toPos, frac);
   }
-  const dur = f.approachEndT - f.approachStartT;
-  const frac = dur > 0 ? (simTime - f.approachStartT) / dur : 1;
-  return {
-    x: f.fromPos.x + (f.toPos.x - f.fromPos.x) * frac,
-    y: f.fromPos.y + (f.toPos.y - f.fromPos.y) * frac,
-  };
+  if (simTime <= role.returnStartT) return role.toPos;
+  if (simTime <= role.returnEndT) {
+    const dur = role.returnEndT - role.returnStartT;
+    const frac = dur > 0 ? (simTime - role.returnStartT) / dur : 1;
+    return lerp(role.toPos, role.fromPos, frac);
+  }
+  return role.fromPos;
 };
 
-export const relayFielderPositionAtTime = (
+// Returns the choreographed position for a given fielder, or null if not
+// involved in this play (in which case the renderer keeps them at home).
+export const fielderPositionForChoreo = (
   choreo: PlayChoreo,
   simTime: number,
+  fielderId: PlayerId,
 ): FieldPoint | null => {
-  const f = choreo.relayFielder;
-  if (!f) return null;
-  if (simTime <= f.startT) return f.fromPos;
-  if (simTime >= f.endT) return f.toPos;
-  const dur = f.endT - f.startT;
-  const frac = dur > 0 ? (simTime - f.startT) / dur : 1;
-  return {
-    x: f.fromPos.x + (f.toPos.x - f.fromPos.x) * frac,
-    y: f.fromPos.y + (f.toPos.y - f.fromPos.y) * frac,
-  };
+  for (const role of choreo.fielderRoles) {
+    if (role.playerId === fielderId) {
+      return positionForRole(role, simTime);
+    }
+  }
+  return null;
 };
 
 export const buildFielderIdsByPos = (
@@ -416,10 +503,12 @@ export const buildFielderIdsByPos = (
   startingPitcherId: PlayerId,
   playerIndex: ReadonlyMap<PlayerId, Player>,
 ): ReadonlyMap<FielderPos, PlayerId> => {
-  // Pull each defensive position's player from the lineup. The starting
-  // pitcher fills P (not used for batted-ball fielding here).
   const out = new Map<FielderPos, PlayerId>();
   for (const pos of ALL_FIELDER_POSITIONS) {
+    if (pos === 'P') {
+      out.set('P', startingPitcherId);
+      continue;
+    }
     for (const id of battingOrder) {
       const p = playerIndex.get(id);
       if (p && p.primaryPosition === pos) {
@@ -428,9 +517,5 @@ export const buildFielderIdsByPos = (
       }
     }
   }
-  // Fallbacks: if a position has no primary, leave it empty — pickClosest
-  // throws if its candidate set is empty, but candidate sets always include
-  // multiple positions so at least one will be filled.
-  void startingPitcherId;
   return out;
 };

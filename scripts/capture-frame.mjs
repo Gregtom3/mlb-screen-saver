@@ -52,7 +52,7 @@ const outBase = OUT.endsWith('.png') ? OUT.slice(0, -4) : OUT;
 const seqMode = process.argv.includes('--sequence');
 const burstMode = process.argv.includes('--burst');
 const captures = burstMode
-  ? Array.from({ length: 24 }, (_, i) => ({ delay: i === 0 ? 0 : 800, suffix: `-b${String(i).padStart(2, '0')}` }))
+  ? Array.from({ length: 40 }, (_, i) => ({ delay: i === 0 ? 0 : 400, suffix: `-b${String(i).padStart(2, '0')}` }))
   : seqMode
   ? [
       { delay: 0, suffix: '-01-early' },

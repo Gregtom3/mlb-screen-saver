@@ -56,7 +56,12 @@ interface GameState {
 }
 
 const TIME_PITCH = 25; // arbitrary "ticks" between pitches
-const TIME_PA_END = 8;
+// PA_END is the gap after a plate appearance ends. The renderer uses this
+// window to choreograph the full play (fielder approach → throw → relay →
+// return-to-mound → settle hold) before the next pitch fires. It needs to
+// be wide enough that the longest play (a pop-up that hangs forever) fits
+// completely inside it.
+const TIME_PA_END = 50;
 const TIME_INNING_GAP = 60;
 
 const newSideState = (input: SideInput): SideState => ({

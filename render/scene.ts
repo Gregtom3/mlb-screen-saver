@@ -12,9 +12,7 @@ import {
   buildAllPlayChoreos,
   buildFielderIdsByPos,
   ballStateForChoreo,
-  primaryFielderPositionAtTime,
-  relayFielderPositionAtTime,
-  type FielderPos,
+  fielderPositionForChoreo,
   type PlayChoreo,
 } from './choreo.js';
 
@@ -239,7 +237,10 @@ export const buildScene = (
         // Reset count for next batter.
         balls = 0;
         strikes = 0;
-        currentBatterId = null;
+        // Don't clear currentBatterId here — keep the batter sprite on
+        // screen until the choreo's post-play hold ends, so the viewer can
+        // see the result with the batter still in frame. The next pitch
+        // event will overwrite currentBatterId when it fires.
         break;
       }
       case 'sub': {
@@ -283,60 +284,55 @@ export const buildScene = (
   const battingColors = ctx.teamColors.get(battingTeamId);
   if (!fieldingColors || !battingColors) throw new Error('team colors missing');
 
-  // Build fielders. Phase 1 only swaps the pitcher; the rest of the field
-  // can use the side's starting lineup defense as a stand-in.
+  // Active choreo for any in-progress play.
+  const activeChoreo: PlayChoreo | undefined =
+    lastContactT !== null ? choreos.get(lastContactT) : undefined;
+  const choreoActive = activeChoreo !== undefined && simTime < activeChoreo.endT;
+
+  // Pull a possibly-overridden position for the given fielder. Used uniformly
+  // for pitcher, catcher, and the seven position players so any of them can
+  // be choreographed (e.g. pitcher covering 1B, catcher in front of plate).
+  const fielderPosFor = (
+    playerId: string,
+    homePos: FieldPoint,
+  ): FieldPoint => {
+    if (!choreoActive || !activeChoreo) return homePos;
+    const overridden = fielderPositionForChoreo(activeChoreo, simTime, playerId);
+    return overridden ?? homePos;
+  };
+
+  // Build fielders.
   const fieldingLineupIds =
     half === 'top' ? ctx.input.home.battingOrder : ctx.input.away.battingOrder;
   const fielders: ScenePlayer[] = [];
-  // Pitcher first.
   if (pitcher) {
     fielders.push({
       id: pitcher.id,
       role: 'pitcher',
-      position: fielderPositionFor('P'),
+      position: fielderPosFor(pitcher.id, fielderPositionFor('P')),
       primaryColor: fieldingColors.primary,
       secondaryColor: fieldingColors.secondary,
     });
   }
-  // Catcher: pick first fielding lineup player whose primary is C, fall back to first slot.
   const catcherPlayer = pickByPrimary(ctx.input.playerIndex, fieldingLineupIds, 'C');
   const catcher: ScenePlayer | null = catcherPlayer
     ? {
         id: catcherPlayer.id,
         role: 'catcher',
-        position: fielderPositionFor('C'),
+        position: fielderPosFor(catcherPlayer.id, fielderPositionFor('C')),
         primaryColor: fieldingColors.primary,
         secondaryColor: fieldingColors.secondary,
       }
     : null;
   if (catcher) fielders.push(catcher);
 
-  // Active choreo for any in-progress play.
-  const activeChoreo: PlayChoreo | undefined =
-    lastContactT !== null ? choreos.get(lastContactT) : undefined;
-  const choreoActive = activeChoreo !== undefined && simTime < activeChoreo.endT;
-  const primaryFielderId = choreoActive ? activeChoreo.primaryFielder?.playerId : undefined;
-  const relayFielderId = choreoActive ? activeChoreo.relayFielder?.playerId : undefined;
-  const primaryFielderPos = choreoActive
-    ? primaryFielderPositionAtTime(activeChoreo, simTime)
-    : null;
-  const relayFielderPos = choreoActive
-    ? relayFielderPositionAtTime(activeChoreo, simTime)
-    : null;
-
-  // Other 7 defensive positions, mapped from lineup primary positions.
-  // The primary fielder for the active play (if any) gets its position
-  // overridden to its choreographed location instead of its home post.
   for (const pos of ['1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF'] as const) {
     const p = pickByPrimary(ctx.input.playerIndex, fieldingLineupIds, pos);
     if (!p) continue;
-    let position = fielderPositionFor(pos);
-    if (p.id === primaryFielderId && primaryFielderPos) position = primaryFielderPos;
-    else if (p.id === relayFielderId && relayFielderPos) position = relayFielderPos;
     fielders.push({
       id: p.id,
       role: 'fielder',
-      position,
+      position: fielderPosFor(p.id, fielderPositionFor(pos)),
       primaryColor: fieldingColors.primary,
       secondaryColor: fieldingColors.secondary,
     });
