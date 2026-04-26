@@ -170,6 +170,9 @@ const describeOutcome = (outcome: AtBatOutcome, batterName: string): string => {
 interface PitchInProgress {
   readonly t: number;
   readonly outcomeKnown: boolean;
+  // Whether this pitch was actually swung at — drives the bat-swing animation.
+  // Take pitches (ball / called-strike / hit-by-pitch) shouldn't move the bat.
+  readonly wasSwing: boolean;
 }
 interface ContactInProgress {
   readonly t: number;
@@ -231,13 +234,16 @@ export const buildScene = (
         break;
       case 'pitch': {
         currentBatterId = ev.batterId;
-        // Track count progression per pitch result.
         const r = ev.pitch.result;
         if (r === 'ball') balls += 1;
         else if (r === 'called-strike' || r === 'swinging-strike') strikes += 1;
         else if (r === 'foul' && strikes < 2) strikes += 1;
-        // hit-by-pitch / in-play / foul-tip-caught resolve at atBatEnd.
-        lastPitch = { t: ev.t, outcomeKnown: r === 'in-play' };
+        const wasSwing =
+          r === 'swinging-strike' ||
+          r === 'foul' ||
+          r === 'foul-tip-caught' ||
+          r === 'in-play';
+        lastPitch = { t: ev.t, outcomeKnown: r === 'in-play', wasSwing };
         break;
       }
       case 'contact': {
@@ -392,14 +398,16 @@ export const buildScene = (
     });
   }
 
-  // Batter sprite at the box. Handedness drives which side of the plate.
-  // swingFrac: 0..1 across each pitch, peaks ~0.65 of the way through the
-  // pitch flight so the bat "meets" the ball near the plate.
+  // Batter sprite at the box. Hidden once the batter has fired a baserunner
+  // event in this half-inning — otherwise we'd render them at the box AND
+  // as a runner ("the dupe"). Swing animation only fires on actual swing
+  // pitches; a take leaves the bat in ready stance.
+  const batterIsRunner = currentBatterId !== null && runnerLatest.has(currentBatterId);
   let batterScene: ScenePlayer | null = null;
-  if (batter && phase === 'live') {
+  if (batter && phase === 'live' && !batterIsRunner) {
     const boxX = batter.bats === 'L' ? 4.5 : -4.5;
     let swingFrac = 0;
-    if (lastPitch) {
+    if (lastPitch && lastPitch.wasSwing) {
       const elapsed = simTime - lastPitch.t;
       const swingStartT = PITCH_FLIGHT_TICKS * 0.55;
       const swingEndT = PITCH_FLIGHT_TICKS * 0.95;

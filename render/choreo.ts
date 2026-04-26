@@ -336,17 +336,22 @@ const buildOneChoreo = (
   }
 
   // Primary fielder role — approach + hold + return.
-  // Caught-in-air: arrives at landing just as ball does.
-  fielderRoles.push({
-    playerId: primary.playerId,
-    fielderPos: primary.pos,
-    fromPos: primary.homePos,
-    toPos: landing,
-    approachStartT: contactT,
-    approachEndT: flightEndT,
-    returnStartT: pickupEndT + 4,
-    returnEndT: pickupEndT + 4 + FIELDER_RETURN_TICKS,
-  });
+  // Caught-in-air: arrives at landing just as ball does. HOME RUNS skip
+  // this entirely: the ball is over the fence, no one chases it. Without
+  // this guard, the primary fielder would jog over the wall trying to
+  // catch a HR, which the user (correctly) flagged as silly.
+  if (outcome !== 'home-run') {
+    fielderRoles.push({
+      playerId: primary.playerId,
+      fielderPos: primary.pos,
+      fromPos: primary.homePos,
+      toPos: landing,
+      approachStartT: contactT,
+      approachEndT: flightEndT,
+      returnStartT: pickupEndT + 4,
+      returnEndT: pickupEndT + 4 + FIELDER_RETURN_TICKS,
+    });
+  }
 
   // Per-runner timing overrides. Out runners get a slower pace so their
   // arrival roughly coincides with the throw (otherwise they'd look obviously

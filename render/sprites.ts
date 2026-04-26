@@ -94,23 +94,33 @@ const drawPixelSprite = (
   }
 };
 
+// Subtle idle bob applied to every sprite — small sine wave with a
+// per-player phase offset so they don't all bob in unison. Adds life
+// between pitches without distracting from on-field action.
+const phaseHash = (id: string): number => {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 1024;
+  return (h / 1024) * Math.PI * 2;
+};
+
 const drawPlayer = (
   ctx: CanvasRenderingContext2D,
   t: FieldTransform,
   p: ScenePlayer,
+  simTime: number,
 ): void => {
   const s = worldToScreen(p.position, t);
   const pixelSize = Math.max(1.5, t.pixelsPerFoot * SCALE_PX_PER_FT);
+  // Vertical bob, ~0.6 px peak for a 12-px sprite.
+  const bobY = Math.sin(simTime * 0.55 + phaseHash(p.id)) * pixelSize * 0.4;
+  const cy = s.y + bobY;
   drawShadow(ctx, s.x, s.y, pixelSize);
-  drawPixelSprite(ctx, PLAYER_SPRITE, s.x, s.y, pixelSize, p.primaryColor, p.secondaryColor);
+  drawPixelSprite(ctx, PLAYER_SPRITE, s.x, cy, pixelSize, p.primaryColor, p.secondaryColor);
 
-  // Role-specific accents.
+  // Role-specific accents — anchored to the bobbed sprite center.
   if (p.role === 'batter') {
-    // 2-frame swing: bat handle near the trailing shoulder; tip rotates
-    // from "ready" (cocked back) to "follow-through" (forward + low).
     const dir = p.position.x < 0 ? -1 : 1;
     const swingFrac = p.swingFrac ?? 0;
-    // Ready: tip behind/up. Follow-through: tip in front/down.
     const tipReady = { x: -dir * pixelSize * 1.5, y: -pixelSize * 7 };
     const tipFollow = { x: dir * pixelSize * 7, y: pixelSize * 0.5 };
     const tipX = tipReady.x + (tipFollow.x - tipReady.x) * swingFrac;
@@ -121,11 +131,11 @@ const drawPlayer = (
     ctx.lineWidth = Math.max(1.5, pixelSize * 1.1);
     ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.moveTo(s.x + handleX, s.y + handleY);
-    ctx.lineTo(s.x + tipX, s.y + tipY);
+    ctx.moveTo(s.x + handleX, cy + handleY);
+    ctx.lineTo(s.x + tipX, cy + tipY);
     ctx.stroke();
   } else if (p.role === 'pitcher') {
-    // Rubber strip behind the pitcher.
+    // Rubber strip drawn at the GROUND, not bobbed (it's a fixed mark on the field).
     ctx.fillStyle = '#f3eedb';
     ctx.fillRect(
       Math.floor(s.x - pixelSize * 3),
@@ -184,11 +194,11 @@ export const drawScene = (
   t: FieldTransform,
   scene: SceneState,
 ): void => {
-  // Order: catcher (back), fielders, pitcher, runners, batter, ball (top).
-  if (scene.catcher) drawPlayer(ctx, t, scene.catcher);
-  for (const f of scene.fielders) drawPlayer(ctx, t, f);
-  if (scene.pitcher) drawPlayer(ctx, t, scene.pitcher);
-  for (const r of scene.runners) drawPlayer(ctx, t, r);
-  if (scene.batter) drawPlayer(ctx, t, scene.batter);
+  const simTime = scene.simTime;
+  if (scene.catcher) drawPlayer(ctx, t, scene.catcher, simTime);
+  for (const f of scene.fielders) drawPlayer(ctx, t, f, simTime);
+  if (scene.pitcher) drawPlayer(ctx, t, scene.pitcher, simTime);
+  for (const r of scene.runners) drawPlayer(ctx, t, r, simTime);
+  if (scene.batter) drawPlayer(ctx, t, scene.batter, simTime);
   drawBall(ctx, t, scene);
 };
