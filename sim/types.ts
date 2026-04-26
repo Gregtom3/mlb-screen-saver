@@ -1,7 +1,14 @@
 // Simulation primitives. The /sim package exists to produce a typed event log;
 // downstream packages render, score, and react to that log.
 
-import type { Player, PlayerId, TeamId, StadiumId, GameId } from '../world/types.js';
+import type {
+  Player,
+  PlayerId,
+  TeamId,
+  StadiumId,
+  GameId,
+  StadiumQuirk,
+} from '../world/types.js';
 
 export type Side = 'home' | 'away';
 export type Base = 0 | 1 | 2 | 3; // 0 = home plate, 1/2/3 bases
@@ -157,4 +164,9 @@ export interface GameInput {
   readonly away: SideInput;
   readonly playerIndex: ReadonlyMap<PlayerId, Player>;
   readonly seed: number;
+  // Per-park flavor that modulates sim outcomes (Phase 4). The renderer
+  // already reads stadium dimensions and atmosphere; this is the hook for
+  // quirks that *change the game itself* — short-porch HR boosts, altitude
+  // thin-air, wind-tunnel direction, deep CF.
+  readonly stadiumQuirk?: StadiumQuirk;
 }

@@ -105,6 +105,7 @@ const buildGameInput = (
     away: awaySide,
     playerIndex,
     seed: seed ^ fnv(entry.gameId),
+    stadiumQuirk: stadium.quirk,
   };
   return { input, home, away, stadium };
 };

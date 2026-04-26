@@ -11,6 +11,8 @@ import type {
   SideInput,
   SimEvent,
 } from './types.js';
+import { adjustmentsFor, type QuirkAdjustments } from './stadium-effects.js';
+import type { StadiumQuirk } from '../world/types.js';
 
 // =========================================================================
 // Phase 1 pitch-by-pitch sim.
@@ -292,16 +294,20 @@ const simulateInPlay = (
   outs: number,
   bases: BasesState,
   rng: PRNG,
+  quirk: StadiumQuirk | undefined,
 ): InPlayResult => {
-  // Outcome roll from a rating-modulated probability table.
+  // Outcome roll from a rating-modulated probability table, then multiplied
+  // by stadium-quirk adjustments (Phase 4 plugin). Quirks shift odds; they
+  // never change ratings or fabricate outcomes directly.
   const power = batter.ratings.power - 50;
   const speed = batter.ratings.speed - 50;
   const contact = batter.ratings.contact - 50;
   const pitcherStrength = pitcher.ratings.stamina - 50;
 
-  const hrRate = Math.max(0.005, 0.04 + power * 0.0018 - pitcherStrength * 0.0006);
-  const dblRate = Math.max(0.02, 0.07 + power * 0.0009 + contact * 0.0004);
-  const tplRate = Math.max(0.001, 0.005 + speed * 0.0003);
+  const adj: QuirkAdjustments = adjustmentsFor(quirk);
+  const hrRate = Math.max(0.005, (0.04 + power * 0.0018 - pitcherStrength * 0.0006) * adj.hrRateMul);
+  const dblRate = Math.max(0.02, (0.07 + power * 0.0009 + contact * 0.0004) * adj.doubleRateMul);
+  const tplRate = Math.max(0.001, (0.005 + speed * 0.0003) * adj.tripleRateMul);
   const sglRate = Math.max(0.05, 0.2 + contact * 0.0011 - pitcherStrength * 0.0005);
 
   const r = rng.next();
@@ -553,6 +559,7 @@ const simulateAtBat = (
   state: GameState,
   rng: PRNG,
   playerIndex: ReadonlyMap<PlayerId, Player>,
+  stadiumQuirk: StadiumQuirk | undefined,
 ): AtBatResult => {
   const fieldingSide_ = fieldingSide(state);
   const battingSide_ = battingSide(state);
@@ -611,7 +618,7 @@ const simulateAtBat = (
         outcome = 'hit-by-pitch';
         break;
       case 'in-play': {
-        inPlayResult = simulateInPlay(batter, pitcher, state.outs, state.bases, rng);
+        inPlayResult = simulateInPlay(batter, pitcher, state.outs, state.bases, rng, stadiumQuirk);
         outcome = inPlayResult.outcome;
         state.events.push({
           t: state.t,
@@ -683,11 +690,16 @@ const simulateAtBat = (
 
 // ---- inning / game loop -----------------------------------------------
 
-const playHalfInning = (state: GameState, rng: PRNG, playerIndex: ReadonlyMap<PlayerId, Player>): void => {
+const playHalfInning = (
+  state: GameState,
+  rng: PRNG,
+  playerIndex: ReadonlyMap<PlayerId, Player>,
+  stadiumQuirk: StadiumQuirk | undefined,
+): void => {
   state.outs = 0;
   state.bases = { first: null, second: null, third: null };
   while (state.outs < 3) {
-    const result = simulateAtBat(state, rng, playerIndex);
+    const result = simulateAtBat(state, rng, playerIndex, stadiumQuirk);
     state.outs += result.outsAdded;
     state.bases = result.newBases;
     if (state.outs >= 3) break;
@@ -729,12 +741,12 @@ export const runGame = (input: GameInput): readonly SimEvent[] => {
   // Top + bottom of innings 1..9, plus extras until decided.
   while (true) {
     state.half = 'top';
-    playHalfInning(state, rng, input.playerIndex);
+    playHalfInning(state, rng, input.playerIndex, input.stadiumQuirk);
 
     // Skip bottom of 9th+ if home is winning.
     if (state.inning >= 9 && state.runs.home > state.runs.away) break;
     state.half = 'bottom';
-    playHalfInning(state, rng, input.playerIndex);
+    playHalfInning(state, rng, input.playerIndex, input.stadiumQuirk);
 
     if (state.inning >= 9 && state.runs.home !== state.runs.away) break;
 

@@ -55,7 +55,8 @@ const main = () => {
 
   const homeTeam = league.teams.find((t) => t.id === entry.homeTeamId);
   const awayTeam = league.teams.find((t) => t.id === entry.awayTeamId);
-  if (!homeTeam || !awayTeam) throw new Error('Team lookup failed');
+  const stadium = league.stadiums.find((s) => s.id === entry.stadiumId);
+  if (!homeTeam || !awayTeam || !stadium) throw new Error('Team / stadium lookup failed');
 
   const homeLineup = buildLineup(homeTeam, league.players, args.day);
   const awayLineup = buildLineup(awayTeam, league.players, args.day);
@@ -85,6 +86,7 @@ const main = () => {
     away: awaySide,
     playerIndex,
     seed: gameSeed,
+    stadiumQuirk: stadium.quirk,
   };
 
   const events = runGame(input);
