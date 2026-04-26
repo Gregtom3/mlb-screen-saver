@@ -7,7 +7,14 @@ import {
   baseFor,
   lerpPoint,
 } from './field-geometry.js';
-import type { FieldPoint, ScenePlayer, SceneState } from './types.js';
+import type {
+  BatterCardStats,
+  FieldPoint,
+  SceneLineScore,
+  ScenePlayer,
+  SceneState,
+} from './types.js';
+import { buildBoxScore } from '../sim/box-score.js';
 import {
   buildAllPlayChoreos,
   buildFielderIdsByPos,
@@ -435,6 +442,46 @@ export const buildScene = (
     ballInFlight = frac > 0 && frac < 1;
   }
 
+  // HUD aggregates — derived from the same event prefix so the line score,
+  // batter card, and on-deck indicator always agree with what's on the field.
+  const eventsPrefix = events.filter((e) => e.t <= simTime);
+  let batterStats: BatterCardStats | null = null;
+  let onDeckBatterId: PlayerId | null = null;
+  let lineScore: SceneLineScore = {
+    innings: [],
+    home: { runs: 0, hits: 0, errors: 0 },
+    away: { runs: 0, hits: 0, errors: 0 },
+  };
+  if (eventsPrefix.length > 0 && phase !== 'pre-game') {
+    const box = buildBoxScore(eventsPrefix, ctx.input);
+    lineScore = {
+      innings: box.lineScore.innings,
+      home: box.lineScore.home,
+      away: box.lineScore.away,
+    };
+    if (currentBatterId) {
+      const battersList = half === 'top' ? box.awayBatters : box.homeBatters;
+      const row = battersList.find((b) => b.playerId === currentBatterId);
+      if (row) {
+        batterStats = {
+          atBats: row.atBats,
+          hits: row.hits,
+          homeRuns: row.homeRuns,
+          rbis: row.rbis,
+          walks: row.walks,
+          strikeouts: row.strikeouts,
+        };
+      }
+    }
+    const battingOrder = half === 'top' ? ctx.input.away.battingOrder : ctx.input.home.battingOrder;
+    if (currentBatterId) {
+      const idx = battingOrder.indexOf(currentBatterId);
+      if (idx >= 0) {
+        onDeckBatterId = battingOrder[(idx + 1) % battingOrder.length] ?? null;
+      }
+    }
+  }
+
   return {
     phase,
     inning,
@@ -462,6 +509,9 @@ export const buildScene = (
     stadiumName: ctx.stadiumName,
     homeAbbr: ctx.teamAbbr.get(ctx.input.home.teamId) ?? ctx.input.home.teamId,
     awayAbbr: ctx.teamAbbr.get(ctx.input.away.teamId) ?? ctx.input.away.teamId,
+    batterStats,
+    onDeckBatterId,
+    lineScore,
   };
 };
 

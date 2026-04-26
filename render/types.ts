@@ -1,5 +1,28 @@
 import type { PlayerId, StadiumId, TeamId } from '../world/types.js';
 
+// HUD-only aggregates derived from the event log. Computed by the scene
+// reducer once per frame from the same SimEvent stream that drives the
+// field rendering, so the HUD always agrees with the action.
+export interface BatterCardStats {
+  readonly atBats: number;
+  readonly hits: number;
+  readonly homeRuns: number;
+  readonly rbis: number;
+  readonly walks: number;
+  readonly strikeouts: number;
+}
+
+export interface LineScoreInning {
+  readonly top: number;
+  readonly bottom: number | null;
+}
+
+export interface SceneLineScore {
+  readonly innings: readonly LineScoreInning[];
+  readonly home: { readonly runs: number; readonly hits: number; readonly errors: number };
+  readonly away: { readonly runs: number; readonly hits: number; readonly errors: number };
+}
+
 // Field coordinate system:
 //   - Origin (0, 0) at home plate.
 //   - +X toward 1st base (right).
@@ -67,4 +90,9 @@ export interface SceneState {
   readonly stadiumName: string;
   readonly homeAbbr: string;
   readonly awayAbbr: string;
+  // HUD aggregates. The scene reducer fills these by walking the event
+  // prefix and reusing /sim/box-score.ts.
+  readonly batterStats: BatterCardStats | null;
+  readonly onDeckBatterId: PlayerId | null;
+  readonly lineScore: SceneLineScore;
 }

@@ -14,7 +14,7 @@ export interface FieldTransform {
 
 const TARGET_OUTFIELD_FT = 420; // a touch past the deepest fence
 const TARGET_FOUL_FT = 240; // half of the lateral spread we want visible
-const HOME_BOTTOM_MARGIN = 84; // px below home plate, leaves room for the catcher behind the plate
+const HOME_BOTTOM_MARGIN = 110; // px below home plate, leaves room for catcher + bottom HUD panels
 
 export const computeTransform = (canvasWidth: number, canvasHeight: number): FieldTransform => {
   const fieldTop = SCOREBUG_HEIGHT + 10; // small breathing room below the bug

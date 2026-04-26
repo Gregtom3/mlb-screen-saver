@@ -61,10 +61,16 @@ export const createRenderLoop = (
     drawField(ctx, transform, { grassShade: sceneCtx.grassShade });
     const scene = buildScene(events, simTime, sceneCtx);
     drawScene(ctx, transform, scene);
-    drawHud(ctx, transform, scene, {
-      away: teamBugInfo(sceneCtx.input.away.teamId, scene.scoreAway),
-      home: teamBugInfo(sceneCtx.input.home.teamId, scene.scoreHome),
-    });
+    drawHud(
+      ctx,
+      transform,
+      scene,
+      {
+        away: teamBugInfo(sceneCtx.input.away.teamId, scene.scoreAway),
+        home: teamBugInfo(sceneCtx.input.home.teamId, scene.scoreHome),
+      },
+      sceneCtx.input.playerIndex,
+    );
   };
 
   const frame = (now: number) => {
