@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SFX Audition · 8-Bit Baseball</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #0b0d10;
+        color: #e6e6e6;
+        font-family:
+          ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 32px 20px 80px;
+      }
+      h1 {
+        font-size: 16px;
+        color: #f1c40f;
+        margin: 0 0 4px;
+      }
+      .subtitle {
+        color: #6a7079;
+        font-size: 12px;
+        margin-bottom: 22px;
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        background: #11151a;
+        border: 1px solid #1d2128;
+        padding: 10px 12px;
+        margin-bottom: 10px;
+      }
+      button {
+        background: #1a1f26;
+        color: #e6e6e6;
+        border: 1px solid #2a3038;
+        padding: 6px 12px;
+        font-family: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #232932;
+      }
+      button.primary {
+        background: #1d2a1d;
+        border-color: #2f4a2f;
+        color: #d2f5d2;
+      }
+      button.primary:hover {
+        background: #25382b;
+      }
+      .vol {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: #9aa0a6;
+        margin-left: 4px;
+      }
+      .vol input {
+        accent-color: #f1c40f;
+      }
+      .status {
+        font-size: 11px;
+        color: #9aa0a6;
+        padding: 6px 12px 14px;
+      }
+      .cues {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .cue {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: #11151a;
+        border: 1px solid #1d2128;
+        padding: 10px 12px;
+        transition: border-color 0.15s ease;
+      }
+      .cue.playing {
+        border-color: #f1c40f;
+      }
+      .cue-meta {
+        flex: 1;
+      }
+      .cue-name {
+        font-size: 13px;
+        font-weight: bold;
+      }
+      .cue-desc {
+        font-size: 11px;
+        color: #9aa0a6;
+        margin-top: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>SFX audition</h1>
+      <div class="subtitle">
+        click any cue, or "play all in sequence" to hear the bank back-to-back.
+        the in-game occurrence each sound represents is shown in gray.
+      </div>
+      <div id="audition"></div>
+    </main>
+    <script type="module" src="/audio/audition.ts"></script>
+  </body>
+</html>

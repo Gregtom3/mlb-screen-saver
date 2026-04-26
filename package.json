@@ -6,6 +6,7 @@
   "description": "8-bit baseball screensaver with a persistent simulated 16-team league.",
   "scripts": {
     "dev": "vite",
+    "audio:audition": "vite --open /audition.html",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
