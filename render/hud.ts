@@ -79,8 +79,96 @@ export const drawHud = (
   drawBatterCard(ctx, t, scene, playerIndex, teams);
   drawLineScore(ctx, t, scene, teams);
 
+  // Big-play screen flash + popup, layered over the field.
+  drawScreenFlash(ctx, t, scene);
+  drawBigPlayPopup(ctx, t, scene);
+
   if (scene.phase === 'final') drawFinalBanner(ctx, t, scene, teams);
 };
+
+// ============================================================ big play ===
+
+// Visual durations in sim ticks (≈ seconds). At default 20 ticks/wall sec,
+// these are 0.7 sec popup, 0.2 sec flash.
+const POPUP_DURATION_TICKS = 14;
+const FLASH_DURATION_TICKS = 4;
+
+const drawBigPlayPopup = (
+  ctx: CanvasRenderingContext2D,
+  t: FieldTransform,
+  scene: SceneState,
+): void => {
+  if (!scene.lastBigPlay) return;
+  const age = scene.simTime - scene.lastBigPlay.firedAtT;
+  if (age < 0 || age > POPUP_DURATION_TICKS) return;
+
+  const big = scene.lastBigPlay;
+  const frac = age / POPUP_DURATION_TICKS;
+  // 3-phase pop animation: scale up → settle → fade.
+  let scale: number;
+  let alpha: number;
+  if (frac < 0.18) {
+    // overshoot in
+    scale = 0.4 + (frac / 0.18) * 0.95;
+    alpha = (frac / 0.18);
+  } else if (frac < 0.32) {
+    // settle
+    scale = 1.35 - ((frac - 0.18) / 0.14) * 0.35;
+    alpha = 1;
+  } else if (frac < 0.78) {
+    // hold
+    scale = 1;
+    alpha = 1;
+  } else {
+    // fade
+    scale = 1;
+    alpha = Math.max(0, 1 - (frac - 0.78) / 0.22);
+  }
+
+  const cx = t.canvasWidth / 2;
+  const cy = t.canvasHeight / 2 - 40;
+  const fontSize = Math.round(56 * scale);
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = `bold ${fontSize}px ui-monospace, "JetBrains Mono", monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = Math.max(3, fontSize * 0.1);
+  ctx.strokeStyle = '#0c0d10';
+  ctx.strokeText(big.label, cx, cy);
+  ctx.fillStyle = big.teamColor;
+  ctx.fillText(big.label, cx, cy);
+  ctx.restore();
+};
+
+const drawScreenFlash = (
+  ctx: CanvasRenderingContext2D,
+  t: FieldTransform,
+  scene: SceneState,
+): void => {
+  if (!scene.lastBigPlay || scene.lastBigPlay.intensity !== 'extra-base') return;
+  const age = scene.simTime - scene.lastBigPlay.firedAtT;
+  if (age < 0 || age > FLASH_DURATION_TICKS) return;
+
+  // Border-only flash so the field stays readable.
+  const frac = age / FLASH_DURATION_TICKS;
+  const alpha = (1 - frac) * 0.35;
+  const borderW = 28;
+  ctx.save();
+  ctx.fillStyle = scene.lastBigPlay.teamColor;
+  ctx.globalAlpha = alpha;
+  // top
+  ctx.fillRect(0, 0, t.canvasWidth, borderW);
+  // bottom
+  ctx.fillRect(0, t.canvasHeight - borderW, t.canvasWidth, borderW);
+  // left
+  ctx.fillRect(0, 0, borderW, t.canvasHeight);
+  // right
+  ctx.fillRect(t.canvasWidth - borderW, 0, borderW, t.canvasHeight);
+  ctx.restore();
+};
+
 
 // ============================================================ tier 1 ===
 

@@ -9,6 +9,7 @@ import {
 } from './field-geometry.js';
 import type {
   BatterCardStats,
+  BigPlayInfo,
   FieldPoint,
   SceneLineScore,
   ScenePlayer,
@@ -71,9 +72,10 @@ interface SceneContext {
   readonly teamAbbr: ReadonlyMap<TeamId, string>;
   readonly stadiumName: string;
   // Per-stadium grass shade pulled from the stadium record's atmosphere.
-  // The renderer reads this directly so Tide Park's deeper green and
-  // Glacier Hollow's chillier hue look distinct.
   readonly grassShade: string;
+  // Per-stadium sky tint — typically derived from the home team's primary
+  // color blended with a dark base, so each park has its own ambient feel.
+  readonly skyColor: string;
 }
 
 const fielderPositionFor = (
@@ -219,6 +221,7 @@ export const buildScene = (
   let lastPitch: PitchInProgress | null = null;
   let lastContact: ContactInProgress | null = null;
   let lastContactT: number | null = null; // for choreo lookup
+  let lastBigPlay: BigPlayInfo | null = null;
 
   for (const ev of events) {
     if (ev.t > simTime) break;
@@ -276,15 +279,22 @@ export const buildScene = (
         const batter = currentBatterId ? ctx.input.playerIndex.get(currentBatterId) : null;
         const batterLast = batter ? batter.lastName : '';
         lastPlay = describeOutcome(ev.outcome, batterLast);
-        // Outs from this PA (matches the sim's accounting).
         outs += outsAddedFor(ev.outcome);
-        // Reset count for next batter.
         balls = 0;
         strikes = 0;
-        // Don't clear currentBatterId here — keep the batter sprite on
-        // screen until the choreo's post-play hold ends, so the viewer can
-        // see the result with the batter still in frame. The next pitch
-        // event will overwrite currentBatterId when it fires.
+        // Set "big play" popup trigger for on-field fanfare + screen flash.
+        const big = bigPlayFor(ev.outcome);
+        if (big) {
+          const battingTeamForBig =
+            half === 'top' ? ctx.input.away.teamId : ctx.input.home.teamId;
+          const colors = ctx.teamColors.get(battingTeamForBig);
+          lastBigPlay = {
+            firedAtT: ev.t,
+            label: big.label,
+            intensity: big.intensity,
+            teamColor: colors?.primary ?? '#f1c40f',
+          };
+        }
         break;
       }
       case 'sub': {
@@ -512,7 +522,27 @@ export const buildScene = (
     batterStats,
     onDeckBatterId,
     lineScore,
+    lastBigPlay,
+    simTime,
   };
+};
+
+// Decides whether an outcome triggers the on-field popup, what label to
+// show, and whether the screen-edge flash should fire.
+const bigPlayFor = (
+  outcome: AtBatOutcome,
+): { label: string; intensity: 'normal' | 'extra-base' } | null => {
+  switch (outcome) {
+    case 'home-run': return { label: 'HOME RUN!', intensity: 'extra-base' };
+    case 'triple': return { label: 'TRIPLE!', intensity: 'extra-base' };
+    case 'double': return { label: 'DOUBLE!', intensity: 'extra-base' };
+    case 'single': return { label: 'SINGLE!', intensity: 'normal' };
+    case 'strikeout-swinging':
+    case 'strikeout-looking':
+      return { label: 'K!', intensity: 'normal' };
+    case 'double-play': return { label: 'DOUBLE PLAY!', intensity: 'normal' };
+    default: return null;
+  }
 };
 
 const outsAddedFor = (outcome: AtBatOutcome): number => {

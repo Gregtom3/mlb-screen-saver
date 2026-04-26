@@ -58,7 +58,10 @@ export const createRenderLoop = (
 
   const draw = () => {
     const transform = computeTransform(canvas.width, canvas.height);
-    drawField(ctx, transform, { grassShade: sceneCtx.grassShade });
+    drawField(ctx, transform, {
+      grassShade: sceneCtx.grassShade,
+      skyColor: sceneCtx.skyColor,
+    });
     const scene = buildScene(events, simTime, sceneCtx);
     drawScene(ctx, transform, scene);
     drawHud(

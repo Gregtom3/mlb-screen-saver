@@ -54,6 +54,7 @@ const buildContextAndEvents = () => {
     teamAbbr,
     stadiumName: stadium.name,
     grassShade: stadium.atmosphere.grassShade,
+    skyColor: '#0b0d10',
   };
   return { events, ctx };
 };

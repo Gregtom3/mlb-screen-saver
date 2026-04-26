@@ -37,6 +37,24 @@ const fnv = (s: string): number => {
   return h >>> 0;
 };
 
+const blendColors = (foreground: string, background: string, towardBg: number): string => {
+  const parse = (hex: string) => {
+    const c = hex.replace('#', '');
+    return [
+      parseInt(c.slice(0, 2), 16),
+      parseInt(c.slice(2, 4), 16),
+      parseInt(c.slice(4, 6), 16),
+    ] as const;
+  };
+  const [fr, fg, fb] = parse(foreground);
+  const [br, bg, bb] = parse(background);
+  const r = Math.round(fr * (1 - towardBg) + br * towardBg);
+  const g = Math.round(fg * (1 - towardBg) + bg * towardBg);
+  const b = Math.round(fb * (1 - towardBg) + bb * towardBg);
+  const toHex = (n: number) => n.toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+};
+
 const sizeCanvas = (canvas: HTMLCanvasElement) => {
   // Match canvas backing-store size to its CSS pixel size for crisp rendering.
   const rect = canvas.getBoundingClientRect();
@@ -132,12 +150,18 @@ const main = () => {
     league.teams.map((t) => [t.id, { primary: t.colors.primary, secondary: t.colors.secondary, accent: t.colors.accent }]),
   );
   const teamAbbr = new Map(league.teams.map((t) => [t.id, t.abbr]));
+  // Sky tint: the home team's primary color blended with a dark base so
+  // each ballpark has a distinct ambient feel without going full daylight.
+  const homeColor = homeTeam.colors.primary;
+  const skyColor = blendColors(homeColor, '#0b0d10', 0.78);
+
   const sceneCtx: SceneContext = {
     input,
     teamColors,
     teamAbbr,
     stadiumName: stadium.name,
     grassShade: stadium.atmosphere.grassShade,
+    skyColor,
   };
 
   const handle = createRenderLoop(canvas, events, sceneCtx, { autoStart: true });

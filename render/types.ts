@@ -23,6 +23,17 @@ export interface SceneLineScore {
   readonly away: { readonly runs: number; readonly hits: number; readonly errors: number };
 }
 
+// "Big play" trigger for the on-field popup + screen-edge flash. Set on
+// every atBatEnd with a notable outcome, consumed by the HUD if the event
+// is recent enough.
+export interface BigPlayInfo {
+  readonly firedAtT: number;
+  readonly label: string;
+  // 'extra-base' covers 2B, 3B, HR, and triggers the screen-edge flash.
+  readonly intensity: 'normal' | 'extra-base';
+  readonly teamColor: string;
+}
+
 // Field coordinate system:
 //   - Origin (0, 0) at home plate.
 //   - +X toward 1st base (right).
@@ -95,4 +106,8 @@ export interface SceneState {
   readonly batterStats: BatterCardStats | null;
   readonly onDeckBatterId: PlayerId | null;
   readonly lineScore: SceneLineScore;
+  readonly lastBigPlay: BigPlayInfo | null;
+  // The simTime at which this scene was built — lets the HUD compute
+  // event ages for transient effects (popup pop, screen-edge flash).
+  readonly simTime: number;
 }
