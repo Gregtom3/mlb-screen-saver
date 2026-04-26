@@ -1,9 +1,9 @@
 import type { FieldPoint } from './types.js';
+import { SCOREBUG_HEIGHT } from './hud.js';
 
-// Maps the abstract field coordinate system (feet, home plate at origin,
-// +Y toward outfield) to canvas pixels. The renderer asks for a transform
-// once per frame given the current canvas size; everything downstream
-// just uses worldToScreen().
+// Maps field coordinates (feet, home plate at origin, +Y toward outfield)
+// to canvas pixels. The renderer asks for a transform once per frame given
+// the current canvas size; everything downstream uses worldToScreen().
 
 export interface FieldTransform {
   readonly canvasWidth: number;
@@ -12,21 +12,21 @@ export interface FieldTransform {
   readonly pixelsPerFoot: number;
 }
 
-const TARGET_OUTFIELD_FT = 420; // a bit beyond the deepest fence
-const TARGET_FOUL_FT = 250; // half of the lateral spread we want visible
-const HUD_TOP_FT = 30; // reserved space above the field for the HUD
+const TARGET_OUTFIELD_FT = 420; // a touch past the deepest fence
+const TARGET_FOUL_FT = 240; // half of the lateral spread we want visible
+const HOME_BOTTOM_MARGIN = 84; // px below home plate, leaves room for the catcher behind the plate
 
 export const computeTransform = (canvasWidth: number, canvasHeight: number): FieldTransform => {
-  // Solve for a px/ft scale that fits both the deep CF and the foul lines.
-  const usableHeight = canvasHeight * 0.92; // leave a little for the bottom HUD
+  const fieldTop = SCOREBUG_HEIGHT + 10; // small breathing room below the bug
+  const fieldBottom = canvasHeight - HOME_BOTTOM_MARGIN;
+  const usableHeight = Math.max(100, fieldBottom - fieldTop);
   const usableWidth = canvasWidth * 0.95;
-  const scaleByY = usableHeight / (TARGET_OUTFIELD_FT + HUD_TOP_FT);
+  const scaleByY = usableHeight / TARGET_OUTFIELD_FT;
   const scaleByX = usableWidth / (TARGET_FOUL_FT * 2);
   const pixelsPerFoot = Math.min(scaleByX, scaleByY);
-  // Place home plate near the bottom-center, with a margin.
   const homePlateScreen = {
     x: canvasWidth / 2,
-    y: canvasHeight - 32,
+    y: fieldBottom,
   };
   return { canvasWidth, canvasHeight, homePlateScreen, pixelsPerFoot };
 };

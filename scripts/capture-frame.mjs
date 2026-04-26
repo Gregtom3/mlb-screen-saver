@@ -45,12 +45,27 @@ page.on('console', (msg) => {
 
 console.log(`navigating to ${URL}`);
 await page.goto(URL, { waitUntil: 'load', timeout: 20000 });
-console.log('navigation complete; waiting 8s for sim to play out');
-await wait(8000);
+console.log('navigation complete; waiting 5s for sim to play out');
+await wait(5000);
 
-console.log(`screenshotting to ${OUT}`);
-await page.screenshot({ path: OUT, fullPage: false });
-console.log('screenshot done');
+const outBase = OUT.endsWith('.png') ? OUT.slice(0, -4) : OUT;
+const seqMode = process.argv.includes('--sequence');
+const captures = seqMode
+  ? [
+      { delay: 0, suffix: '-01-early' },
+      { delay: 6000, suffix: '-02-mid' },
+      { delay: 8000, suffix: '-03-late' },
+      { delay: 10000, suffix: '-04-end' },
+    ]
+  : [{ delay: 0, suffix: '' }];
+
+for (const { delay, suffix } of captures) {
+  if (delay > 0) await wait(delay);
+  const out = suffix ? `${outBase}${suffix}.png` : OUT;
+  console.log(`screenshotting to ${out}`);
+  await page.screenshot({ path: out, fullPage: false });
+}
+console.log('screenshots done');
 
 await browser.close();
 dev.kill();

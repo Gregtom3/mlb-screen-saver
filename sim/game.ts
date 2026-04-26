@@ -167,32 +167,118 @@ const simulatePitch = (
 };
 
 // ---- in-play model -----------------------------------------------------
+//
+// Split into two phases:
+//   1) Decide the outcome from rating-driven probabilities (HR / 2B / 3B /
+//      1B / OUT, then OUT subtype, then sac-fly / DP refinements).
+//   2) Synthesize a BallPath that physically matches that outcome — exit
+//      velo, launch angle, and spray ranges are picked per outcome so the
+//      renderer can show e.g. a high-and-short pop-up vs. a deep fly.
+//
+// This decoupling means the visualization never disagrees with the result:
+// a popout is a tall, short trajectory; a HR is a long arc.
 
-const simulateBallPath = (batter: Player, pitcher: Player, rng: PRNG): BallPath => {
-  const power = batter.ratings.power;
-  const exitVelo = 80 + (power - 50) * 0.6 + (rng.next() - 0.5) * 20;
-  // Launch angle from -20 (worm-burner) to +60 (popup), centered ~12.
-  const launchAngle = -20 + rng.next() * 80;
-  // Spray: -45 (foul left) to +45 (foul right) — bias by handedness.
-  const sprayBias = batter.bats === 'L' ? +5 : batter.bats === 'R' ? -5 : 0;
-  const sprayDeg = -45 + rng.next() * 90 + sprayBias;
-  // Approximate landing distance based on exit velo and angle.
-  const angleEff = Math.max(0, Math.min(45, launchAngle));
-  const dist = exitVelo * 4 * (angleEff / 45 + 0.4);
+const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+
+// Calibrated drag factor: turns vacuum-physics distances into roughly real
+// MLB distances (e.g. 100 mph at 30° → ~415 ft). Keeps hangtime credible.
+const DRAG_FACTOR = 1.4;
+const G_FPS2 = 32.2;
+const MPH_TO_FPS = 1.467;
+
+interface BallPathInputs {
+  readonly evMin: number;
+  readonly evMax: number;
+  readonly angleMin: number;
+  readonly angleMax: number;
+  // Optional spray override; otherwise spray is uniform across fair territory.
+  readonly sprayCenter?: number;
+  readonly spraySpread?: number;
+}
+
+const PROFILES: Record<AtBatOutcome, BallPathInputs | null> = {
+  'home-run': { evMin: 100, evMax: 115, angleMin: 23, angleMax: 36 },
+  'triple': { evMin: 92, evMax: 108, angleMin: 12, angleMax: 28, sprayCenter: 0, spraySpread: 30 },
+  'double': { evMin: 90, evMax: 108, angleMin: 12, angleMax: 26 },
+  'single': { evMin: 78, evMax: 98, angleMin: -2, angleMax: 22 },
+  'flyout': { evMin: 75, evMax: 92, angleMin: 28, angleMax: 46 },
+  'popout': { evMin: 60, evMax: 82, angleMin: 55, angleMax: 80 },
+  'lineout': { evMin: 88, evMax: 102, angleMin: 6, angleMax: 16 },
+  'groundout': { evMin: 70, evMax: 95, angleMin: -14, angleMax: 4 },
+  'double-play': { evMin: 78, evMax: 100, angleMin: -10, angleMax: 2 },
+  'fielders-choice': { evMin: 72, evMax: 92, angleMin: -10, angleMax: 4 },
+  'sac-fly': { evMin: 78, evMax: 92, angleMin: 30, angleMax: 48 },
+  'sac-bunt': { evMin: 50, evMax: 65, angleMin: -2, angleMax: 14 },
+  'reached-on-error': { evMin: 75, evMax: 95, angleMin: 4, angleMax: 22 },
+  'triple-play': { evMin: 70, evMax: 95, angleMin: -8, angleMax: 8 },
+  // Outcomes without contact don't have a BallPath.
+  'walk': null,
+  'hit-by-pitch': null,
+  'strikeout-looking': null,
+  'strikeout-swinging': null,
+};
+
+const buildBallPath = (
+  outcome: AtBatOutcome,
+  batter: Player,
+  pitcher: Player,
+  rng: PRNG,
+): BallPath => {
+  const profile = PROFILES[outcome];
+  if (!profile) throw new Error(`buildBallPath called for non-contact outcome: ${outcome}`);
+
+  // Player-rating modulation, layered on top of the profile band.
+  const powerAdj = (batter.ratings.power - 50) * 0.12;
+  const contactAdj = (batter.ratings.contact - 50) * 0.04;
+  const pitcherSuppression = (pitcher.ratings.stamina - 50) * 0.08;
+  let exitVeloMph =
+    profile.evMin + rng.next() * (profile.evMax - profile.evMin) + powerAdj - pitcherSuppression;
+  exitVeloMph = clamp(exitVeloMph, 45, 115); // hard cap at 115 — top-end MLB EV.
+
+  let launchAngleDeg = profile.angleMin + rng.next() * (profile.angleMax - profile.angleMin);
+  launchAngleDeg += contactAdj * 0.3; // good contact tightens angle slightly upward
+  launchAngleDeg = clamp(launchAngleDeg, -25, 88);
+
+  const sprayBias = batter.bats === 'L' ? +6 : batter.bats === 'R' ? -6 : 0;
+  let sprayDeg: number;
+  if (profile.sprayCenter !== undefined && profile.spraySpread !== undefined) {
+    sprayDeg = profile.sprayCenter + (rng.next() - 0.5) * 2 * profile.spraySpread + sprayBias;
+  } else {
+    sprayDeg = -42 + rng.next() * 84 + sprayBias;
+  }
+  sprayDeg = clamp(sprayDeg, -44, 44);
+
+  // Physics: vacuum trajectory scaled by an effective gravity to model drag.
+  const vFps = exitVeloMph * MPH_TO_FPS;
+  const thetaRad = (launchAngleDeg * Math.PI) / 180;
+  let hangTimeSec: number;
+  let distance: number;
+  if (launchAngleDeg <= 0) {
+    // Ground ball — short rolling distance, fixed-ish hangtime.
+    hangTimeSec = 1.0 + rng.next() * 0.6;
+    distance = vFps * hangTimeSec * 0.42; // friction decay during the roll
+  } else {
+    const vZ = vFps * Math.sin(thetaRad);
+    const vH = vFps * Math.cos(thetaRad);
+    const gEff = G_FPS2 * DRAG_FACTOR;
+    hangTimeSec = (2 * vZ) / gEff;
+    distance = vH * hangTimeSec;
+  }
+
   const sprayRad = (sprayDeg * Math.PI) / 180;
   return {
-    launchAngleDeg: Math.round(launchAngle),
-    exitVeloMph: Math.round(exitVelo),
-    landingX: Math.round(Math.sin(sprayRad) * dist),
-    landingY: Math.round(Math.cos(sprayRad) * dist),
-    hangTimeSec: Math.round((Math.max(0, launchAngle) / 45 + 0.6) * 10) / 10,
+    launchAngleDeg: Math.round(launchAngleDeg),
+    exitVeloMph: Math.round(exitVeloMph),
+    landingX: Math.round(Math.sin(sprayRad) * distance),
+    landingY: Math.round(Math.cos(sprayRad) * distance),
+    hangTimeSec: Math.round(hangTimeSec * 100) / 100,
   };
 };
 
 interface InPlayResult {
   readonly outcome: AtBatOutcome;
   readonly ballPath: BallPath;
-  readonly fielderId?: PlayerId; // best-effort — not used by sim, just stamped on the contact event
+  readonly fielderId?: PlayerId;
 }
 
 const simulateInPlay = (
@@ -202,9 +288,7 @@ const simulateInPlay = (
   bases: BasesState,
   rng: PRNG,
 ): InPlayResult => {
-  const ballPath = simulateBallPath(batter, pitcher, rng);
-
-  // Outcome roll from a flat probability table, modulated by ratings.
+  // Outcome roll from a rating-modulated probability table.
   const power = batter.ratings.power - 50;
   const speed = batter.ratings.speed - 50;
   const contact = batter.ratings.contact - 50;
@@ -222,30 +306,30 @@ const simulateInPlay = (
   else if (r < hrRate + dblRate + tplRate) outcome = 'triple';
   else if (r < hrRate + dblRate + tplRate + sglRate) outcome = 'single';
   else {
-    // Outs split: more grounders for low-launch, more flies for high.
+    // OUT subtype split — independent sub-roll, no longer reads launchAngle
+    // (since the BallPath now depends on outcome, not vice versa).
     const sub = rng.next();
-    if (ballPath.launchAngleDeg < 10) outcome = 'groundout';
-    else if (ballPath.launchAngleDeg > 35) outcome = 'popout';
-    else if (sub < 0.55) outcome = 'flyout';
-    else outcome = 'lineout';
+    if (sub < 0.45) outcome = 'groundout';
+    else if (sub < 0.65) outcome = 'lineout';
+    else if (sub < 0.85) outcome = 'flyout';
+    else outcome = 'popout';
 
-    // Sac fly: <2 outs, runner on 3rd, fly-ball-ish trajectory.
+    // Sac fly: <2 outs, runner on 3rd, on a fly ball variant.
     if (
       outs < 2 &&
       bases.third &&
       (outcome === 'flyout' || outcome === 'lineout') &&
-      ballPath.launchAngleDeg > 18 &&
       rng.next() < 0.45
     ) {
       outcome = 'sac-fly';
     }
-
-    // Double play: <2 outs, runner on 1st, grounder.
+    // Double play: <2 outs, runner on 1st, on a grounder.
     if (outs < 2 && bases.first && outcome === 'groundout' && rng.next() < 0.32) {
       outcome = 'double-play';
     }
   }
 
+  const ballPath = buildBallPath(outcome, batter, pitcher, rng);
   return { outcome, ballPath };
 };
 

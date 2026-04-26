@@ -16,11 +16,11 @@ export const THIRD_BASE: FieldPoint = { x: -BASE_OFFSET, y: BASE_OFFSET };
 // outfielders back, a no-doubles defense shifts everyone toward the lines).
 export const FIELDER_HOME_POSITIONS = {
   P: PITCHERS_MOUND,
-  C: { x: 0, y: -8 },
-  '1B': { x: 70, y: 70 },
-  '2B': { x: 38, y: 115 },
-  SS: { x: -38, y: 115 },
-  '3B': { x: -70, y: 70 },
+  C: { x: 0, y: -5 },
+  '1B': { x: 60, y: 80 },
+  '2B': { x: 36, y: 118 },
+  SS: { x: -36, y: 118 },
+  '3B': { x: -60, y: 80 },
   LF: { x: -130, y: 230 },
   CF: { x: 0, y: 280 },
   RF: { x: 130, y: 230 },

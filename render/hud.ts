@@ -1,128 +1,189 @@
 import type { SceneState } from './types.js';
 import type { FieldTransform } from './transform.js';
 
-// On-field overlays: score strip across the top, count + outs in a corner,
-// last-play caption at the bottom. Designed to be diegetic-light per the
-// CLAUDE.md tone notes — thin, monospace, never shouty.
+// Single top scorebug carries every piece of game state. Designed to read
+// like a real broadcast bug: team blocks on the left, inning indicator,
+// count / outs / bases cluster, last-play caption, stadium tag at right.
+//
+// Bottom panels were removed — the rest of the canvas below SCOREBUG_HEIGHT
+// is pure field, with home plate sized into that available space.
 
-const HUD_BG = 'rgba(11, 13, 16, 0.78)';
-const HUD_TEXT = '#e6e6e6';
-const HUD_DIM = '#9aa0a6';
-const HUD_ACCENT = '#f1c40f';
+export const SCOREBUG_HEIGHT = 64;
 
-const FONT_STACK = '14px "JetBrains Mono", "SFMono-Regular", Menlo, monospace';
-const FONT_BOLD = 'bold 16px "JetBrains Mono", "SFMono-Regular", Menlo, monospace';
-const FONT_SMALL = '11px "JetBrains Mono", "SFMono-Regular", Menlo, monospace';
+const TIER_1_H = 36;
+const TIER_2_H = SCOREBUG_HEIGHT - TIER_1_H;
 
-const halfArrow = (half: 'top' | 'bottom') => (half === 'top' ? '▲' : '▼');
+const COLOR_BG = 'rgba(11, 13, 16, 0.92)';
+const COLOR_BG_TIER2 = 'rgba(15, 18, 22, 0.92)';
+const COLOR_TEXT = '#e8eaee';
+const COLOR_DIM = '#7d848d';
+const COLOR_ACCENT = '#f1c40f';
+const COLOR_DIVIDER = '#2a2f37';
+
+const FONT_SCORE = 'bold 18px ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace';
+const FONT_ABBR = 'bold 13px ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace';
+const FONT_INNING = 'bold 14px ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace';
+const FONT_LABEL = '11px ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace';
+const FONT_VALUE = 'bold 13px ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace';
+const FONT_PLAY = '12px ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace';
+
+interface TeamBugInfo {
+  abbr: string;
+  score: number;
+  primary: string;
+  secondary: string;
+}
 
 export const drawHud = (
   ctx: CanvasRenderingContext2D,
   t: FieldTransform,
   scene: SceneState,
+  teams: { away: TeamBugInfo; home: TeamBugInfo },
 ): void => {
-  drawScoreStrip(ctx, t, scene);
-  drawCountAndOuts(ctx, t, scene);
-  drawBaseDiagram(ctx, t, scene);
-  if (scene.lastPlay) drawLastPlay(ctx, t, scene);
-  if (scene.phase === 'final') drawFinalBanner(ctx, t, scene);
+  // Backgrounds.
+  ctx.fillStyle = COLOR_BG;
+  ctx.fillRect(0, 0, t.canvasWidth, TIER_1_H);
+  ctx.fillStyle = COLOR_BG_TIER2;
+  ctx.fillRect(0, TIER_1_H, t.canvasWidth, TIER_2_H);
+  // Subtle bottom border to separate from field.
+  ctx.fillStyle = COLOR_DIVIDER;
+  ctx.fillRect(0, SCOREBUG_HEIGHT - 1, t.canvasWidth, 1);
+
+  // -------- Tier 1: team blocks + inning + stadium --------
+  drawTeamBlock(ctx, 0, 0, TIER_1_H / 2, teams.away);
+  drawTeamBlock(ctx, 0, TIER_1_H / 2, TIER_1_H / 2, teams.home);
+  drawInningPanel(ctx, t.canvasWidth / 2, TIER_1_H / 2, scene);
+  drawStadiumLabel(ctx, t.canvasWidth - 12, TIER_1_H / 2, scene);
+
+  // -------- Tier 2: count / outs / bases / last play --------
+  let cursor = 14;
+  cursor = drawCount(ctx, cursor, TIER_1_H + TIER_2_H / 2, scene);
+  cursor = drawOuts(ctx, cursor + 18, TIER_1_H + TIER_2_H / 2, scene);
+  cursor = drawBases(ctx, cursor + 18, TIER_1_H + TIER_2_H / 2, scene);
+
+  drawLastPlay(ctx, cursor + 18, t.canvasWidth - 12, TIER_1_H + TIER_2_H / 2, scene);
+
+  if (scene.phase === 'final') drawFinalBanner(ctx, t, scene, teams);
 };
 
-const drawScoreStrip = (
-  ctx: CanvasRenderingContext2D,
-  t: FieldTransform,
-  scene: SceneState,
-): void => {
-  const w = t.canvasWidth;
-  const h = 36;
-  ctx.fillStyle = HUD_BG;
-  ctx.fillRect(0, 0, w, h);
+// ---------- Tier 1 ----------
 
-  ctx.font = FONT_BOLD;
+const TEAM_BLOCK_W = 144;
+
+const drawTeamBlock = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  h: number,
+  team: TeamBugInfo,
+): void => {
+  // Wider, more saturated color stripe so the team identity reads at a glance.
+  ctx.fillStyle = team.primary;
+  ctx.fillRect(x, y, 14, h);
+  // Stronger team-tint behind the abbr + score.
+  ctx.fillStyle = team.primary;
+  ctx.globalAlpha = 0.42;
+  ctx.fillRect(x + 14, y, TEAM_BLOCK_W - 14, h);
+  ctx.globalAlpha = 1;
+  // Abbr.
+  ctx.font = FONT_ABBR;
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
-  ctx.fillStyle = HUD_TEXT;
-  ctx.fillText(scene.awayAbbr, 16, h / 2);
-  ctx.fillText(String(scene.scoreAway), 64, h / 2);
-  ctx.fillStyle = HUD_DIM;
-  ctx.fillText('@', 100, h / 2);
-  ctx.fillStyle = HUD_TEXT;
-  ctx.fillText(scene.homeAbbr, 124, h / 2);
-  ctx.fillText(String(scene.scoreHome), 172, h / 2);
-
-  // Inning indicator.
-  ctx.textAlign = 'center';
-  ctx.fillStyle = HUD_ACCENT;
-  ctx.fillText(`${halfArrow(scene.half)} ${scene.inning}`, w / 2, h / 2);
-
-  // Stadium label, right side.
-  ctx.font = FONT_SMALL;
+  ctx.fillStyle = COLOR_TEXT;
+  ctx.fillText(team.abbr, x + 22, y + h / 2);
+  // Score (right-aligned within the block).
+  ctx.font = FONT_SCORE;
   ctx.textAlign = 'right';
-  ctx.fillStyle = HUD_DIM;
-  ctx.fillText(scene.stadiumName, w - 16, h / 2);
+  ctx.fillStyle = COLOR_TEXT;
+  ctx.fillText(String(team.score), x + TEAM_BLOCK_W - 12, y + h / 2);
 };
 
-const drawCountAndOuts = (
+const drawInningPanel = (
   ctx: CanvasRenderingContext2D,
-  t: FieldTransform,
+  cx: number,
+  cy: number,
   scene: SceneState,
 ): void => {
-  // Bottom-left panel.
-  const padding = 12;
-  const panelW = 132;
-  const panelH = 56;
-  const x = padding;
-  const y = t.canvasHeight - panelH - padding;
-  ctx.fillStyle = HUD_BG;
-  ctx.fillRect(x, y, panelW, panelH);
+  if (scene.phase === 'pre-game') return;
+  const half = scene.half === 'top' ? '▲ TOP' : '▼ BOT';
+  ctx.font = FONT_INNING;
+  ctx.fillStyle = COLOR_ACCENT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`${half} ${scene.inning}`, cx, cy);
+};
 
-  ctx.font = FONT_STACK;
+const drawStadiumLabel = (
+  ctx: CanvasRenderingContext2D,
+  rightX: number,
+  cy: number,
+  scene: SceneState,
+): void => {
+  ctx.font = FONT_LABEL;
+  ctx.fillStyle = COLOR_DIM;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(scene.stadiumName, rightX, cy);
+};
+
+// ---------- Tier 2 ----------
+
+const drawCount = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  cy: number,
+  scene: SceneState,
+): number => {
+  ctx.font = FONT_LABEL;
+  ctx.fillStyle = COLOR_DIM;
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
-  ctx.fillStyle = HUD_DIM;
-  ctx.fillText('count', x + 10, y + 16);
-  ctx.fillStyle = HUD_TEXT;
-  ctx.font = FONT_BOLD;
-  ctx.fillText(`${scene.balls}-${scene.strikes}`, x + 60, y + 16);
+  ctx.fillText('count', x, cy);
+  ctx.font = FONT_VALUE;
+  ctx.fillStyle = COLOR_TEXT;
+  ctx.fillText(`${scene.balls}-${scene.strikes}`, x + 38, cy);
+  return x + 70;
+};
 
-  ctx.font = FONT_STACK;
-  ctx.fillStyle = HUD_DIM;
-  ctx.fillText('outs', x + 10, y + 40);
-  // Outs as filled/empty dots.
+const drawOuts = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  cy: number,
+  scene: SceneState,
+): number => {
+  ctx.font = FONT_LABEL;
+  ctx.fillStyle = COLOR_DIM;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.fillText('outs', x, cy);
   for (let i = 0; i < 3; i++) {
-    ctx.fillStyle = i < scene.outs ? HUD_ACCENT : '#3a3f47';
+    ctx.fillStyle = i < scene.outs ? COLOR_ACCENT : '#3a3f47';
     ctx.beginPath();
-    ctx.arc(x + 60 + i * 16, y + 40, 5, 0, Math.PI * 2);
+    ctx.arc(x + 32 + i * 12, cy, 4, 0, Math.PI * 2);
     ctx.fill();
   }
+  return x + 32 + 2 * 12 + 8;
 };
 
-const drawBaseDiagram = (
+const drawBases = (
   ctx: CanvasRenderingContext2D,
-  t: FieldTransform,
+  x: number,
+  cy: number,
   scene: SceneState,
-): void => {
-  // Bottom-right panel.
-  const padding = 12;
-  const panelW = 92;
-  const panelH = 56;
-  const x = t.canvasWidth - panelW - padding;
-  const y = t.canvasHeight - panelH - padding;
-  ctx.fillStyle = HUD_BG;
-  ctx.fillRect(x, y, panelW, panelH);
-
-  // Mini-diamond: 1B (right), 2B (top), 3B (left).
-  const cx = x + panelW / 2;
-  const cy = y + panelH / 2 + 4;
-  const armLen = 16;
-  drawMiniBase(ctx, cx + armLen, cy, scene.basesOccupied.first);
-  drawMiniBase(ctx, cx, cy - armLen, scene.basesOccupied.second);
-  drawMiniBase(ctx, cx - armLen, cy, scene.basesOccupied.third);
-
-  ctx.font = FONT_SMALL;
-  ctx.fillStyle = HUD_DIM;
+): number => {
+  ctx.font = FONT_LABEL;
+  ctx.fillStyle = COLOR_DIM;
+  ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
-  ctx.fillText('bases', x + 10, y + 12);
+  ctx.fillText('bases', x, cy);
+
+  // Mini-diamond aligned vertically with the row.
+  const diamondX = x + 44;
+  const arm = 9;
+  drawMiniBase(ctx, diamondX + arm, cy, scene.basesOccupied.first);
+  drawMiniBase(ctx, diamondX, cy - arm, scene.basesOccupied.second);
+  drawMiniBase(ctx, diamondX - arm, cy, scene.basesOccupied.third);
+  return diamondX + arm + 12;
 };
 
 const drawMiniBase = (
@@ -134,55 +195,61 @@ const drawMiniBase = (
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(Math.PI / 4);
-  ctx.fillStyle = occupied ? HUD_ACCENT : '#5a6068';
-  ctx.fillRect(-6, -6, 12, 12);
-  ctx.strokeStyle = HUD_TEXT;
+  ctx.fillStyle = occupied ? COLOR_ACCENT : '#5a6068';
+  ctx.fillRect(-4, -4, 8, 8);
+  ctx.strokeStyle = COLOR_TEXT;
   ctx.lineWidth = 1;
-  ctx.strokeRect(-6, -6, 12, 12);
+  ctx.strokeRect(-4, -4, 8, 8);
   ctx.restore();
 };
 
 const drawLastPlay = (
   ctx: CanvasRenderingContext2D,
-  t: FieldTransform,
+  x: number,
+  rightX: number,
+  cy: number,
   scene: SceneState,
 ): void => {
   if (!scene.lastPlay) return;
-  // Tucked under the score strip so it never sits over the field.
-  const panelH = 24;
-  const panelW = Math.min(420, t.canvasWidth - 200);
-  const x = (t.canvasWidth - panelW) / 2;
-  const y = 36 + 6;
-  ctx.fillStyle = HUD_BG;
-  ctx.fillRect(x, y, panelW, panelH);
-  ctx.font = FONT_SMALL;
-  ctx.fillStyle = HUD_TEXT;
-  ctx.textAlign = 'center';
+  ctx.font = FONT_PLAY;
+  ctx.fillStyle = COLOR_TEXT;
   ctx.textBaseline = 'middle';
-  ctx.fillText(scene.lastPlay, x + panelW / 2, y + panelH / 2);
+  ctx.textAlign = 'left';
+  // Truncate if it would run past rightX.
+  const maxW = Math.max(80, rightX - x);
+  let text = scene.lastPlay;
+  if (ctx.measureText(text).width > maxW) {
+    while (text.length > 4 && ctx.measureText(text + '…').width > maxW) text = text.slice(0, -1);
+    text = text + '…';
+  }
+  ctx.fillText(text, x, cy);
 };
 
 const drawFinalBanner = (
   ctx: CanvasRenderingContext2D,
   t: FieldTransform,
   scene: SceneState,
+  teams: { away: TeamBugInfo; home: TeamBugInfo },
 ): void => {
-  const w = 240;
-  const h = 64;
+  const w = 280;
+  const h = 80;
   const x = (t.canvasWidth - w) / 2;
   const y = (t.canvasHeight - h) / 2;
-  ctx.fillStyle = HUD_BG;
+  ctx.fillStyle = COLOR_BG;
   ctx.fillRect(x, y, w, h);
-  ctx.font = FONT_BOLD;
-  ctx.fillStyle = HUD_ACCENT;
+  ctx.strokeStyle = COLOR_ACCENT;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, w, h);
+  ctx.font = 'bold 18px ui-monospace, monospace';
+  ctx.fillStyle = COLOR_ACCENT;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('FINAL', x + w / 2, y + 22);
-  ctx.font = FONT_STACK;
-  ctx.fillStyle = HUD_TEXT;
+  ctx.fillText('FINAL', x + w / 2, y + 24);
+  ctx.font = FONT_INNING;
+  ctx.fillStyle = COLOR_TEXT;
   ctx.fillText(
-    `${scene.awayAbbr} ${scene.scoreAway}    ${scene.homeAbbr} ${scene.scoreHome}`,
+    `${teams.away.abbr} ${scene.scoreAway}    ${teams.home.abbr} ${scene.scoreHome}`,
     x + w / 2,
-    y + 46,
+    y + 54,
   );
 };

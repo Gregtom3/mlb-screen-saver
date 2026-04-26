@@ -48,20 +48,52 @@ const drawPlayer = (
   }
 };
 
+// 2.5D ball: shadow stays anchored to the field at the ground projection
+// while the ball itself lifts off and grows slightly with altitude. Gives
+// pop-ups a vertical "feel" without leaving the birds-eye perspective.
+const VERTICAL_SCALE = 0.8; // canvas-px-of-lift per foot-of-altitude, before pixelsPerFoot
+const SHADOW_FALLOFF_FT = 80; // shadow fades and shrinks as ball climbs
+
 const drawBall = (
   ctx: CanvasRenderingContext2D,
   t: FieldTransform,
   scene: SceneState,
 ): void => {
   if (!scene.ball.visible) return;
-  const s = worldToScreen(scene.ball.position, t);
+  const ground = worldToScreen(scene.ball.position, t);
+  const heightPx = scene.ball.heightFt * t.pixelsPerFoot * VERTICAL_SCALE;
+  const baseRadius = 3;
+  const ballRadius = baseRadius + scene.ball.heightFt * 0.04;
+
+  // Shadow on the field — only while in flight (otherwise it overlaps the ball).
+  if (scene.ball.inFlight && scene.ball.heightFt > 0.1) {
+    const heightFactor = Math.min(1, scene.ball.heightFt / SHADOW_FALLOFF_FT);
+    const shadowAlpha = 0.55 * (1 - heightFactor * 0.55);
+    const shadowR = baseRadius * (1.1 - heightFactor * 0.4);
+    ctx.fillStyle = `rgba(8, 12, 16, ${shadowAlpha})`;
+    ctx.beginPath();
+    ctx.ellipse(ground.x, ground.y, shadowR + 1, shadowR * 0.55, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Ball — raised by altitude.
+  const bx = ground.x;
+  const by = ground.y - heightPx;
   ctx.fillStyle = '#ffffff';
   ctx.strokeStyle = '#1a1a1a';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
+  ctx.arc(bx, by, ballRadius, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
+
+  // Faint stitch dot for visual interest at higher altitudes.
+  if (scene.ball.heightFt > 12) {
+    ctx.fillStyle = '#c4262e';
+    ctx.beginPath();
+    ctx.arc(bx + ballRadius * 0.2, by - ballRadius * 0.2, 0.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
 };
 
 export const drawScene = (

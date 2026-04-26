@@ -17,11 +17,17 @@ import type { FieldPoint, ScenePlayer, SceneState } from './types.js';
 // what CLAUDE.md means by "the renderer is a pure function of the log + tick."
 // =========================================================================
 
-// Sim time units are arbitrary integers (see /sim/game.ts). The renderer
-// picks how long animation primitives last in those units.
-const PITCH_FLIGHT_TICKS = 4;
-const RUNNER_TRAVEL_TICKS_PER_BASE = 3;
-const CONTACT_FLIGHT_TICKS = 14;
+// One sim tick ≈ one second of in-game time (see /sim/game.ts: TIME_PITCH=25
+// roughly matches the 20–25 sec real-MLB inter-pitch gap). The renderer picks
+// how long each animation primitive lasts in those units.
+//
+// The default playback rate of 20 sim-ticks/wall-sec means we render at ~20×
+// real-time, which lands the ~30-min-per-game screensaver target.
+const PITCH_FLIGHT_TICKS = 4;        // ball flight is highly compressed visually
+const RUNNER_TRAVEL_TICKS_PER_BASE = 7; // ~7 sim sec/base — pleasant screensaver pace, slower than real-time
+// Ball-in-play uses BallPath.hangTimeSec directly (computed by /sim/game.ts).
+// Grounders extend slightly so the rolling motion is readable.
+const GROUNDER_EXTRA_TICKS = 0.5;
 
 interface RunnerLatest {
   readonly from: 0 | 1 | 2 | 3;
@@ -311,26 +317,45 @@ export const buildScene = (
     });
   }
 
-  // Ball position.
-  // Default: at the mound (idle).
+  // Ball state — position (ground projection), height (for 2.5D), visibility,
+  // and whether it's currently in flight (drives shadow rendering).
   let ballPos: FieldPoint = PITCHERS_MOUND;
+  let ballHeight = 0;
   let ballVisible = phase === 'live';
+  let ballInFlight = false;
 
-  // If a contact event is in flight, follow the trajectory.
   if (lastContact && (!lastPitch || lastContact.t >= lastPitch.t)) {
-    const elapsed = simTime - lastContact.t;
-    const frac = Math.max(0, Math.min(1, elapsed / CONTACT_FLIGHT_TICKS));
+    // Post-contact flight. Hangtime drives the duration; vertical motion is
+    // a true parabola so pop-ups go up and come down near the infield while
+    // line drives stay flat.
+    const path = lastContact.path;
+    const totalTicks = path.hangTimeSec + (path.launchAngleDeg <= 0 ? GROUNDER_EXTRA_TICKS : 0);
+    const elapsed = Math.max(0, simTime - lastContact.t);
+    const frac = totalTicks > 0 ? Math.min(1, elapsed / totalTicks) : 1;
     ballPos = {
-      x: lastContact.path.landingX * frac,
-      y: lastContact.path.landingY * frac,
+      x: path.landingX * frac,
+      y: path.landingY * frac,
     };
-    if (frac >= 1) ballVisible = false; // ball "settled"; renderer can hide
-    else ballVisible = true;
+    if (path.launchAngleDeg <= 0) {
+      // Grounders skip along the dirt — keep height at zero.
+      ballHeight = 0;
+    } else {
+      // z(t) = v_z·t − ½g·t² with v_z chosen so z(hangtime) = 0.
+      const G = 32.2;
+      const vZ = (G * path.hangTimeSec) / 2;
+      const elapsedSec = elapsed; // 1 sim tick ≈ 1 sec
+      ballHeight = Math.max(0, vZ * elapsedSec - 0.5 * G * elapsedSec * elapsedSec);
+    }
+    ballInFlight = frac < 1;
+    ballVisible = frac < 1;
   } else if (lastPitch) {
     const elapsed = simTime - lastPitch.t;
     const frac = Math.max(0, Math.min(1, elapsed / PITCH_FLIGHT_TICKS));
     ballPos = lerpPoint(PITCHERS_MOUND, HOME_PLATE, frac);
+    // A pitch arcs slightly. Peak ~6 ft mid-flight.
+    ballHeight = 6 * Math.sin(frac * Math.PI);
     ballVisible = true;
+    ballInFlight = frac > 0 && frac < 1;
   }
 
   return {
@@ -352,7 +377,7 @@ export const buildScene = (
     catcher,
     fielders: fielders.filter((f) => f.role !== 'pitcher' && f.role !== 'catcher'),
     runners,
-    ball: { position: ballPos, visible: ballVisible },
+    ball: { position: ballPos, heightFt: ballHeight, visible: ballVisible, inFlight: ballInFlight },
     lastPlay,
     homeTeamId: ctx.input.home.teamId,
     awayTeamId: ctx.input.away.teamId,

@@ -34,14 +34,8 @@ const polarToField = (angleDeg: number, distFt: number) => {
   return { x: Math.sin(rad) * distFt, y: Math.cos(rad) * distFt };
 };
 
-export const drawField = (ctx: CanvasRenderingContext2D, t: FieldTransform): void => {
-  // Sky / behind-stadium background.
-  ctx.fillStyle = SKY;
-  ctx.fillRect(0, 0, t.canvasWidth, t.canvasHeight);
-
-  // Outfield grass — fill area from foul lines outward to the wall.
-  ctx.fillStyle = GRASS_OUTFIELD;
-  ctx.beginPath();
+// Build the fair-territory polygon path on the current ctx.
+const fairTerritoryPath = (ctx: CanvasRenderingContext2D, t: FieldTransform): void => {
   const home = worldToScreen(HOME_PLATE, t);
   const lf = worldToScreen(polarToField(-45, OUTFIELD_DEPTHS.leftFoul), t);
   const lc = worldToScreen(polarToField(-22, OUTFIELD_DEPTHS.leftCenter), t);
@@ -50,55 +44,38 @@ export const drawField = (ctx: CanvasRenderingContext2D, t: FieldTransform): voi
   const rf = worldToScreen(polarToField(45, OUTFIELD_DEPTHS.rightFoul), t);
   ctx.moveTo(home.x, home.y);
   ctx.lineTo(lf.x, lf.y);
-  // Smooth curve through the wall — cubic-ish via three quadratic segments.
   ctx.quadraticCurveTo(lc.x, lc.y - 12, cf.x, cf.y);
   ctx.quadraticCurveTo(rc.x, rc.y - 12, rf.x, rf.y);
   ctx.lineTo(home.x, home.y);
   ctx.closePath();
-  ctx.fill();
+};
 
-  // Outfield wall outline.
-  ctx.strokeStyle = WALL_LINE;
-  ctx.lineWidth = 3;
+export const drawField = (ctx: CanvasRenderingContext2D, t: FieldTransform): void => {
+  // Sky / outside-the-park background (covers the foul-territory wedges too).
+  ctx.fillStyle = SKY;
+  ctx.fillRect(0, 0, t.canvasWidth, t.canvasHeight);
+
+  // Everything from here in is clipped to fair territory so the dirt and
+  // outfield grass can never bleed across the foul lines.
+  ctx.save();
   ctx.beginPath();
-  ctx.moveTo(lf.x, lf.y);
-  ctx.quadraticCurveTo(lc.x, lc.y - 12, cf.x, cf.y);
-  ctx.quadraticCurveTo(rc.x, rc.y - 12, rf.x, rf.y);
-  ctx.stroke();
+  fairTerritoryPath(ctx, t);
+  ctx.clip();
 
-  // Infield dirt — diamond bounded by the four bases, expanded a bit.
-  const padFt = 18;
-  const infield: { x: number; y: number }[] = [
-    worldToScreen({ x: 0, y: -padFt }, t),
-    worldToScreen({ x: FIRST_BASE.x + padFt, y: FIRST_BASE.y - padFt }, t),
-    worldToScreen({ x: SECOND_BASE.x, y: SECOND_BASE.y + padFt }, t),
-    worldToScreen({ x: THIRD_BASE.x - padFt, y: THIRD_BASE.y - padFt }, t),
-  ];
-  ctx.fillStyle = DIRT;
-  ctx.beginPath();
-  ctx.moveTo(infield[0]!.x, infield[0]!.y);
-  for (let i = 1; i < infield.length; i++) {
-    ctx.lineTo(infield[i]!.x, infield[i]!.y);
-  }
-  ctx.closePath();
-  ctx.fill();
+  // Outfield grass — fills the whole fair territory (the infield shape will
+  // overpaint it with dirt below).
+  ctx.fillStyle = GRASS_OUTFIELD;
+  ctx.fillRect(0, 0, t.canvasWidth, t.canvasHeight);
 
-  // Infield grass cutout (small, centered on the diamond, not extending to bases).
-  const cutoutFt = 26;
-  ctx.fillStyle = GRASS_INFIELD;
-  ctx.beginPath();
-  const c1 = worldToScreen({ x: 0, y: 30 }, t);
-  const c2 = worldToScreen({ x: cutoutFt, y: 60 }, t);
-  const c3 = worldToScreen({ x: 0, y: 90 }, t);
-  const c4 = worldToScreen({ x: -cutoutFt, y: 60 }, t);
-  ctx.moveTo(c1.x, c1.y);
-  ctx.lineTo(c2.x, c2.y);
-  ctx.lineTo(c3.x, c3.y);
-  ctx.lineTo(c4.x, c4.y);
-  ctx.closePath();
-  ctx.fill();
+  // Infield dirt — a smooth circular arc centered behind the mound. This
+  // hugs the bases without extending past the foul lines (the clip would
+  // catch it anyway, but a rounded shape reads better than a clipped quad).
+  drawInfieldDirt(ctx, t);
 
-  // Pitcher's mound (small dirt circle).
+  // Infield grass cutout — a small diamond inside the dirt.
+  drawInfieldGrass(ctx, t);
+
+  // Pitcher's mound.
   const mound = worldToScreen(PITCHERS_MOUND, t);
   const moundR = Math.max(6, t.pixelsPerFoot * 9);
   ctx.fillStyle = DIRT_DARK;
@@ -109,9 +86,26 @@ export const drawField = (ctx: CanvasRenderingContext2D, t: FieldTransform): voi
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  // Foul lines.
+  ctx.restore();
+
+  // Outfield wall outline (drawn outside the clip so it sits on top).
+  ctx.strokeStyle = WALL_LINE;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  const lf = worldToScreen(polarToField(-45, OUTFIELD_DEPTHS.leftFoul), t);
+  const lc = worldToScreen(polarToField(-22, OUTFIELD_DEPTHS.leftCenter), t);
+  const cf = worldToScreen(polarToField(0, OUTFIELD_DEPTHS.center), t);
+  const rc = worldToScreen(polarToField(22, OUTFIELD_DEPTHS.rightCenter), t);
+  const rf = worldToScreen(polarToField(45, OUTFIELD_DEPTHS.rightFoul), t);
+  ctx.moveTo(lf.x, lf.y);
+  ctx.quadraticCurveTo(lc.x, lc.y - 12, cf.x, cf.y);
+  ctx.quadraticCurveTo(rc.x, rc.y - 12, rf.x, rf.y);
+  ctx.stroke();
+
+  // Foul lines (drawn after the clip so they sit cleanly on the boundary).
   ctx.strokeStyle = FOUL_LINE;
   ctx.lineWidth = 2;
+  const home = worldToScreen(HOME_PLATE, t);
   ctx.beginPath();
   ctx.moveTo(home.x, home.y);
   ctx.lineTo(lf.x, lf.y);
@@ -124,6 +118,49 @@ export const drawField = (ctx: CanvasRenderingContext2D, t: FieldTransform): voi
   drawBase(ctx, t, SECOND_BASE);
   drawBase(ctx, t, THIRD_BASE);
   drawHomePlate(ctx, t);
+};
+
+// The infield dirt is approximated by a circular arc. In MLB the dirt is a
+// 95-ft-radius arc whose center sits about 9 ft behind the front edge of
+// the rubber. We draw the equivalent arc here (radius 95 ft, center near
+// the mound), then close it back along a baseline near home plate so the
+// shape stays a solid fan, not a full circle that leaks over the bases.
+const drawInfieldDirt = (ctx: CanvasRenderingContext2D, t: FieldTransform): void => {
+  const ARC_RADIUS_FT = 95;
+  const ARC_CENTER_Y_FT = 60.5; // behind the mound, MLB convention
+  const center = worldToScreen({ x: 0, y: ARC_CENTER_Y_FT }, t);
+  const radiusPx = ARC_RADIUS_FT * t.pixelsPerFoot;
+  ctx.fillStyle = DIRT;
+  ctx.beginPath();
+  // Start at left-foul-side base path
+  const leftBase = worldToScreen({ x: -ARC_RADIUS_FT, y: ARC_CENTER_Y_FT }, t);
+  ctx.moveTo(leftBase.x, leftBase.y);
+  // Sweep the arc through the outfield-side of the infield.
+  ctx.arc(center.x, center.y, radiusPx, Math.PI, 0, false);
+  // Close back along the home-plate-side: down through the base lines.
+  // For a proper fan, drop straight back to home plate.
+  const homePoint = worldToScreen(HOME_PLATE, t);
+  ctx.lineTo(homePoint.x, homePoint.y);
+  ctx.closePath();
+  ctx.fill();
+};
+
+const drawInfieldGrass = (ctx: CanvasRenderingContext2D, t: FieldTransform): void => {
+  // A small diamond just inside the bases — the standard "infield grass"
+  // cutout that defines the running surface around the bases.
+  const inset = 16; // ft inside each base
+  const a = worldToScreen({ x: 0, y: 30 }, t);
+  const b = worldToScreen({ x: FIRST_BASE.x - inset, y: FIRST_BASE.y - inset }, t);
+  const c = worldToScreen({ x: 0, y: SECOND_BASE.y - 14 }, t);
+  const d = worldToScreen({ x: THIRD_BASE.x + inset, y: THIRD_BASE.y - inset }, t);
+  ctx.fillStyle = GRASS_INFIELD;
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.lineTo(c.x, c.y);
+  ctx.lineTo(d.x, d.y);
+  ctx.closePath();
+  ctx.fill();
 };
 
 const drawBase = (

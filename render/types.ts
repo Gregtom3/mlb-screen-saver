@@ -28,7 +28,14 @@ export interface ScenePlayer {
 
 export interface SceneBall {
   readonly position: FieldPoint;
+  // Height above the field, in feet. Drives the 2.5D rendering — the ball
+  // lifts off its ground point and grows slightly while the shadow stays
+  // anchored to the field.
+  readonly heightFt: number;
   readonly visible: boolean;
+  // Whether the ball is currently in flight (mound→plate or post-contact).
+  // Renderer uses this to know when to draw a shadow.
+  readonly inFlight: boolean;
 }
 
 export type GamePhase = 'pre-game' | 'live' | 'final';
