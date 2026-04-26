@@ -27,8 +27,23 @@ if (!ready) {
 }
 await wait(800);
 
-const CHROMIUM_PATH = '/home/gregtom3/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome';
-const browser = await chromium.launch({ headless: true, executablePath: CHROMIUM_PATH });
+// Try a few well-known chromium install paths; fall back to playwright's
+// default resolution if none are present.
+const CANDIDATE_PATHS = [
+  '/home/gregtom3/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome',
+  '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
+];
+let chromiumPath;
+for (const p of CANDIDATE_PATHS) {
+  try {
+    const fs = await import('node:fs');
+    if (fs.existsSync(p)) { chromiumPath = p; break; }
+  } catch { /* ignore */ }
+}
+const browser = await chromium.launch({
+  headless: true,
+  ...(chromiumPath ? { executablePath: chromiumPath } : {}),
+});
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
 
 page.on('pageerror', (e) => console.error('page error:', e.message));

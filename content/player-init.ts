@@ -53,71 +53,122 @@ const ROSTER_SLOTS: readonly Slot[] = [
 type RatingKey = keyof PlayerRatings;
 type RatingBias = Partial<Record<RatingKey, number>>;
 
-// Position-specific rating biases, in raw points before clamp.
-// Pitchers split between starter (high stamina) and reliever (lower) downstream.
+// Position-specific rating biases, in raw points before clamp. Tuned so each
+// archetype reads correctly: pitchers can't hit, catchers have arms, SS is
+// rangy, DH is a slugger. Catcher-only fields (framing, blocking, popTime)
+// are biased way down for non-catchers and up for catchers.
 const POSITION_BIAS: Record<Position, RatingBias> = {
-  P: { stamina: +20, arm: +12, composure: +6, contact: -25, power: -25, speed: -10, eye: -10, fielding: -5 },
-  C: { arm: +14, fielding: +12, composure: +6, speed: -18, power: +2 },
-  '1B': { power: +14, fielding: +4, speed: -10 },
-  '2B': { speed: +12, fielding: +12, eye: +4, power: -8 },
-  '3B': { arm: +12, power: +6, fielding: +4 },
-  SS: { speed: +14, fielding: +14, arm: +10, power: -10 },
-  LF: { power: +8, contact: +4, fielding: -2 },
-  CF: { speed: +14, fielding: +12, arm: +4 },
-  RF: { power: +8, arm: +10 },
-  DH: { power: +14, contact: +8, fielding: -25, arm: -25, speed: -10 },
+  P: {
+    stamina: +20, armStrength: +10, command: +10, control: +10,
+    velocity: +12, breakingBall: +8, changeup: +6, groundballTendency: +6,
+    holdRunners: +4, composure: +6,
+    contact: -25, power: -25, speed: -10, discipline: -10, glove: -5,
+    range: -8, armAccuracy: -2, transferSpeed: -10, bunting: -10,
+    pitchRecognition: -6, baserunningIQ: -4, stealing: -10,
+    framing: -40, blocking: -40, popTime: -40,
+  },
+  C: {
+    armStrength: +12, armAccuracy: +14, glove: +12, framing: +28,
+    blocking: +26, popTime: +26, composure: +6, command: +4,
+    speed: -18, range: -10, power: +2, stealing: -10, baserunningIQ: -4,
+    velocity: -30, control: -30, breakingBall: -30, changeup: -30,
+    groundballTendency: -30, holdRunners: -30, stamina: -10,
+  },
+  '1B': {
+    power: +14, glove: +4, range: -6, speed: -10, transferSpeed: -2,
+    armStrength: -4, framing: -30, blocking: -30, popTime: -30,
+    velocity: -30, control: -30, breakingBall: -30, changeup: -30,
+    groundballTendency: -30, holdRunners: -30, stamina: -10,
+  },
+  '2B': {
+    speed: +12, glove: +12, range: +10, transferSpeed: +14,
+    discipline: +4, power: -8, armStrength: -2,
+    framing: -30, blocking: -30, popTime: -30,
+    velocity: -30, control: -30, breakingBall: -30, changeup: -30,
+    groundballTendency: -30, holdRunners: -30, stamina: -10,
+  },
+  '3B': {
+    armStrength: +12, armAccuracy: +6, power: +6, glove: +4, range: +2,
+    framing: -30, blocking: -30, popTime: -30,
+    velocity: -30, control: -30, breakingBall: -30, changeup: -30,
+    groundballTendency: -30, holdRunners: -30, stamina: -10,
+  },
+  SS: {
+    speed: +14, glove: +14, range: +14, armStrength: +10, armAccuracy: +8,
+    transferSpeed: +14, power: -10,
+    framing: -30, blocking: -30, popTime: -30,
+    velocity: -30, control: -30, breakingBall: -30, changeup: -30,
+    groundballTendency: -30, holdRunners: -30, stamina: -10,
+  },
+  LF: {
+    power: +8, contact: +4, glove: -2, range: -2, armStrength: -4,
+    framing: -30, blocking: -30, popTime: -30,
+    velocity: -30, control: -30, breakingBall: -30, changeup: -30,
+    groundballTendency: -30, holdRunners: -30, stamina: -10,
+  },
+  CF: {
+    speed: +14, glove: +12, range: +12, armStrength: +2, baserunningIQ: +6,
+    framing: -30, blocking: -30, popTime: -30,
+    velocity: -30, control: -30, breakingBall: -30, changeup: -30,
+    groundballTendency: -30, holdRunners: -30, stamina: -10,
+  },
+  RF: {
+    power: +8, armStrength: +12, armAccuracy: +6, range: -2,
+    framing: -30, blocking: -30, popTime: -30,
+    velocity: -30, control: -30, breakingBall: -30, changeup: -30,
+    groundballTendency: -30, holdRunners: -30, stamina: -10,
+  },
+  DH: {
+    power: +14, contact: +8, discipline: +4,
+    glove: -25, armStrength: -25, range: -25, armAccuracy: -25,
+    transferSpeed: -25, speed: -10, bunting: -8,
+    framing: -40, blocking: -40, popTime: -40,
+    velocity: -30, control: -30, breakingBall: -30, changeup: -30,
+    groundballTendency: -30, holdRunners: -30, stamina: -10,
+  },
 };
 
-const PERSONALITY_FLAGS: readonly PersonalityFlag[] = [
-  'clutch',
-  'streaky',
-  'injury-prone',
-  'durable',
-  'hot-headed',
-  'glove-first',
+const PERSONALITY_FLAGS: readonly PersonalityFlag[] = ['hot-headed', 'glove-first'];
+
+const RATING_KEYS: readonly RatingKey[] = [
+  'contact', 'power', 'discipline', 'pitchRecognition', 'bunting',
+  'platoonBias', 'clutch',
+  'velocity', 'control', 'command', 'stamina', 'breakingBall', 'changeup',
+  'holdRunners', 'groundballTendency',
+  'range', 'glove', 'armStrength', 'armAccuracy', 'transferSpeed',
+  'framing', 'blocking', 'popTime',
+  'speed', 'stealing', 'baserunningIQ',
+  'composure', 'consistency', 'durability', 'workEthic', 'coachability',
 ];
 
 const clampRating = (n: number): number => Math.max(1, Math.min(99, Math.round(n)));
 
 // Bell-curve via average of 3 uniform draws, then biased and scaled.
 const bellRating = (rng: PRNG, mean = 50, spread = 28): number => {
-  const avg = (rng.next() + rng.next() + rng.next()) / 3; // central limit-ish, range 0..1
+  const avg = (rng.next() + rng.next() + rng.next()) / 3; // central limit-ish
   const centered = avg - 0.5; // ~ -0.5..0.5
   return clampRating(mean + centered * 2 * spread);
 };
 
 const generateRatings = (rng: PRNG, position: Position, isStarter: boolean): PlayerRatings => {
-  const base: PlayerRatings = {
-    contact: bellRating(rng),
-    power: bellRating(rng),
-    eye: bellRating(rng),
-    speed: bellRating(rng),
-    fielding: bellRating(rng),
-    arm: bellRating(rng),
-    stamina: bellRating(rng),
-    composure: bellRating(rng),
-  };
   const biases = POSITION_BIAS[position];
-  const biased: PlayerRatings = {
-    contact: clampRating(base.contact + (biases.contact ?? 0)),
-    power: clampRating(base.power + (biases.power ?? 0)),
-    eye: clampRating(base.eye + (biases.eye ?? 0)),
-    speed: clampRating(base.speed + (biases.speed ?? 0)),
-    fielding: clampRating(base.fielding + (biases.fielding ?? 0)),
-    arm: clampRating(base.arm + (biases.arm ?? 0)),
-    stamina: clampRating(
-      base.stamina + (biases.stamina ?? 0) + (position === 'P' ? (isStarter ? +12 : -10) : 0),
-    ),
-    composure: clampRating(base.composure + (biases.composure ?? 0)),
-  };
-  return biased;
+  // Generate every rating from a bell curve, then layer position bias.
+  const out = {} as Record<RatingKey, number>;
+  for (const key of RATING_KEYS) {
+    const base = bellRating(rng);
+    const bias = biases[key] ?? 0;
+    // Pitcher stamina also shifts by SP/RP.
+    const extra = key === 'stamina' && position === 'P' ? (isStarter ? +12 : -10) : 0;
+    out[key] = clampRating(base + bias + extra);
+  }
+  return out as PlayerRatings;
 };
 
 const generatePersonality = (rng: PRNG): readonly PersonalityFlag[] => {
   const flags: PersonalityFlag[] = [];
-  if (rng.next() < 0.32) flags.push(rng.pick(PERSONALITY_FLAGS));
+  if (rng.next() < 0.18) flags.push(rng.pick(PERSONALITY_FLAGS));
   // a second flag is rarer; dedupe.
-  if (rng.next() < 0.1) {
+  if (rng.next() < 0.04) {
     const second = rng.pick(PERSONALITY_FLAGS);
     if (!flags.includes(second)) flags.push(second);
   }

@@ -11,12 +11,14 @@ import {
   type TeamStanding,
   type SceneContext,
 } from '../render/index.js';
-import { mountMenu } from '../ui/index.js';
+import { mountMenu, type LiveGameSummary } from '../ui/index.js';
 import { buildSeasonAggregates, type FinishedGame, type SeasonAggregates } from '../stats/index.js';
+import { buildProjections } from '../projections/index.js';
+import type { ProjectionSet } from '../projections/types.js';
 
-// Phase 3 browser entry. Pre-simulates a few days of games so we have
-// standings, then puts day N+1 on screen as 8 simultaneous "channels".
-// Left/right arrows cycle channels. Number keys 1–8 jump directly.
+// Phase 3+ browser entry. Pre-simulates a few days of games for standings,
+// then puts day N+1 on screen as 8 simultaneous "channels". Phase 5.5 adds
+// the Tab/M stats menu over the canvas.
 
 const QS = new URLSearchParams(globalThis.location?.search ?? '');
 const SEED = QS.get('seed') ? parseSeed(QS.get('seed')!) : 0xba_5e_ba_11;
@@ -74,7 +76,7 @@ const sizeCanvas = (canvas: HTMLCanvasElement) => {
 };
 
 interface LiveGame extends ActiveGame {
-  readonly entry: { homeTeamId: TeamId; awayTeamId: TeamId };
+  readonly entry: { gameId: string; homeTeamId: TeamId; awayTeamId: TeamId };
 }
 
 const buildGameInput = (
@@ -182,19 +184,20 @@ const main = () => {
   const league = generateInitialLeague(SEED);
   const schedule = buildSchedule(league.teams, league.season.year);
 
-  // ---- Pre-simulate history days. Keep events around so /stats can build
-  // full season aggregates (the standings map is now derived from these).
+  // ---- Pre-simulate history days. Stash events for /stats so the menu has
+  // full season context (PA/PA splits, hit charts, WP timelines).
   const historyGames: FinishedGame[] = [];
   for (let day = 1; day < LIVE_DAY; day++) {
     for (const entry of schedule.entries.filter((e) => e.day === day)) {
       const { input } = buildGameInput(league, entry, SEED);
       const events = runGame(input);
-      historyGames.push({ events, input });
+      historyGames.push({ events, input, day });
     }
   }
   const aggregates: SeasonAggregates = buildSeasonAggregates(
     historyGames,
     league.teams,
+    league.players,
     league.season.year,
   );
   // Convert TeamLine → TeamStanding for the existing HUD strip.
@@ -204,7 +207,8 @@ const main = () => {
     standings.set(team.id, line ? { wins: line.W, losses: line.L } : { wins: 0, losses: 0 });
   }
 
-  // ---- Pre-simulate live-day games and keep their event logs.
+  // ---- Pre-simulate live-day games and keep their event logs. The Live
+  // view in the stats menu reads partial state out of these.
   const liveDayEntries = schedule.entries.filter((e) => e.day === LIVE_DAY);
   if (liveDayEntries.length === 0) {
     console.error(`No games on day ${LIVE_DAY}`);
@@ -217,9 +221,28 @@ const main = () => {
     return {
       events,
       sceneCtx,
-      entry: { homeTeamId: entry.homeTeamId, awayTeamId: entry.awayTeamId },
+      entry: {
+        gameId: entry.gameId,
+        homeTeamId: entry.homeTeamId,
+        awayTeamId: entry.awayTeamId,
+      },
     } satisfies LiveGame;
   });
+
+  // Aggregate live-day finals too so the menu's leaderboards reflect them.
+  // Live tiles use the timelines for sparklines.
+  const liveFinishedGames: FinishedGame[] = liveGames.map((g) => ({
+    events: g.events as readonly SimEvent[],
+    input: g.sceneCtx.input,
+    day: LIVE_DAY,
+  }));
+  // Re-build aggregates including live finals (cheap; <1ms for 8 games).
+  const aggregatesWithLive = buildSeasonAggregates(
+    [...historyGames, ...liveFinishedGames],
+    league.teams,
+    league.players,
+    league.season.year,
+  );
 
   let selectedIdx = Math.max(0, Math.min(liveGames.length - 1, INITIAL_GAME));
 
@@ -245,6 +268,15 @@ const main = () => {
     if (channelLabel) channelLabel.textContent = getChannelText();
   };
 
+  const setChannelByGameId = (gameId: string) => {
+    const idx = liveGames.findIndex((g) => g.entry.gameId === gameId);
+    if (idx >= 0 && idx !== selectedIdx) {
+      selectedIdx = idx;
+      handle.setActiveGame(liveGames[selectedIdx]!);
+      if (channelLabel) channelLabel.textContent = getChannelText();
+    }
+  };
+
   globalThis.addEventListener('keydown', (ev) => {
     if (ev.key === 'ArrowRight' || ev.key === 'Right') {
       switchChannel(+1);
@@ -265,17 +297,62 @@ const main = () => {
   setupControls(handle, channelLabel, getChannelText);
 
   // ---- Stats menu (phase 5.5).
-  const playerIndex = new Map(league.players.map((p) => [p.id, p]));
-  const teamGamesPlayed = LIVE_DAY - 1; // each team has played one game per history day
+  const playerIndex = new Map<PlayerId, Player>(league.players.map((p) => [p.id, p]));
+  const stadiumIndex = new Map(league.stadiums.map((s) => [s.id, s]));
+  const teamGamesPlayed = LIVE_DAY; // history days + live day, all complete
+
+  // Lazy projections — single cached set per session.
+  let projectionsCache: ProjectionSet | null = null;
+  const getProjections = (): ProjectionSet => {
+    if (!projectionsCache) {
+      projectionsCache = buildProjections({
+        seasonYear: league.season.year,
+        teams: league.teams,
+        schedule,
+        aggregates: aggregatesWithLive,
+        currentDay: LIVE_DAY,
+        simulations: 500, // dial down for browser snappiness; 1000 still cheap
+        seed: SEED,
+      });
+    }
+    return projectionsCache;
+  };
+
+  const buildLiveSummaries = (): LiveGameSummary[] => {
+    return liveGames.map((g) => {
+      const tl = aggregatesWithLive.wpTimelines.get(g.entry.gameId);
+      // Final state — all games are complete in this snapshot mode.
+      const last = g.events[g.events.length - 1];
+      const finalRuns = last && last.kind === 'gameEnd' ? last.finalRuns : { home: 0, away: 0 };
+      return {
+        gameId: g.entry.gameId,
+        homeTeamId: g.entry.homeTeamId,
+        awayTeamId: g.entry.awayTeamId,
+        score: { home: finalRuns.home, away: finalRuns.away },
+        inning: 9,
+        half: 'bottom' as const,
+        outs: 3,
+        wpTimeline: tl,
+      };
+    });
+  };
+
   const menu = mountMenu(document.body, {
-    getAggregates: () => aggregates,
+    getAggregates: () => aggregatesWithLive,
     getTeamGamesPlayed: () => teamGamesPlayed,
     teams: league.teams,
     playerIndex,
+    schedule,
+    stadiums: stadiumIndex,
+    getProjections,
+    getLiveGames: buildLiveSummaries,
+    setLiveChannel: (gameId) => {
+      setChannelByGameId(gameId);
+      menu.close();
+    },
   });
 
   globalThis.addEventListener('keydown', (ev) => {
-    // Tab and M open/close the menu.
     if (ev.key === 'Tab' || ev.key === 'm' || ev.key === 'M') {
       menu.toggle();
       ev.preventDefault();
