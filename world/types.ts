@@ -6,26 +6,58 @@ export type TeamId = string;
 export type StadiumId = string;
 export type GameId = string;
 
-// Hidden true ratings, 1-99. Drive sim behavior; never displayed verbatim.
+// Hidden true ratings, 1-99. Each one drives a single named sim hook so the
+// numbers feel earned. 50 is neutral. Display layer renders these as 1-5
+// scout stars (`/stats/grades.ts → starRating`). Phase 5.5 part 2 expanded
+// the original 8 lumped fields into a richer set; the four continuous
+// "personality" flags from part 1 (clutch, streaky, durable, injury-prone)
+// became the scalars below.
 export interface PlayerRatings {
-  readonly contact: number;
-  readonly power: number;
-  readonly eye: number;
-  readonly speed: number;
-  readonly fielding: number;
-  readonly arm: number;
-  readonly stamina: number;
-  readonly composure: number;
+  // ---- Hitting ----
+  readonly contact: number; // bat-to-ball; lowers whiff rate on swings
+  readonly power: number; // exit-velocity distribution → HR / XBH
+  readonly discipline: number; // (was "eye") chase rate on out-of-zone pitches → BB%
+  readonly pitchRecognition: number; // swing decisions on breaking / off-speed
+  readonly bunting: number; // sac / drag bunt success
+  readonly platoonBias: number; // 50 = even; >50 = bigger same-hand penalty
+  readonly clutch: number; // 50 = neutral; >50 = better in high-leverage states
+
+  // ---- Pitching ----
+  readonly velocity: number; // fastball MPH; raises foul/whiff rate
+  readonly control: number; // in-zone strike rate → BB%
+  readonly command: number; // within-zone targeting → HR allowed
+  readonly stamina: number; // pitch-count fatigue curve
+  readonly breakingBall: number; // SwStr% on slider/curve
+  readonly changeup: number; // off-speed deception; reduces opp-hand penalty
+  readonly holdRunners: number; // SB attempt rate + success against
+  readonly groundballTendency: number; // GB/FB profile → DP rate, HR allowed
+
+  // ---- Fielding ----
+  readonly range: number; // probability of reaching balls in zone
+  readonly glove: number; // (was "fielding") error rate conditional on reach
+  readonly armStrength: number; // (was "arm") throw velocity
+  readonly armAccuracy: number; // throw precision; cut-off success
+  readonly transferSpeed: number; // DP turn time (IF)
+  readonly framing: number; // ±N called strikes per game (C only)
+  readonly blocking: number; // PB / WP rate (C only)
+  readonly popTime: number; // CS rate (C only)
+
+  // ---- Baserunning ----
+  readonly speed: number; // raw foot speed; BABIP on grounders, triple rate
+  readonly stealing: number; // SB technique independent of raw speed
+  readonly baserunningIQ: number; // taking the extra base; avoids TOOTBLAN
+
+  // ---- Mental ----
+  readonly composure: number; // performance under pressure; resists clutch
+  readonly consistency: number; // game-to-game variance (replaces "streaky")
+  readonly durability: number; // injury chance + recovery (replaces durable/injury-prone)
+  readonly workEthic: number; // aging-curve modifier (later peak, slower decline)
+  readonly coachability: number; // in-season development drift
 }
 
-// Personality tags modulate behavior subtly; not all-or-nothing.
-export type PersonalityFlag =
-  | 'clutch'
-  | 'streaky'
-  | 'injury-prone'
-  | 'durable'
-  | 'hot-headed'
-  | 'glove-first';
+// Personality flags now only contain qualitative tags. Continuous traits
+// (clutch, streaky, durable, injury-prone) graduated to scalar ratings.
+export type PersonalityFlag = 'hot-headed' | 'glove-first';
 
 export type Position =
   | 'P'

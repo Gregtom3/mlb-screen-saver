@@ -6,11 +6,12 @@ const FIELDING_POSITIONS: readonly FieldingPosition[] = [
 ];
 
 const hittingScore = (p: Player): number =>
-  p.ratings.contact * 1.0 + p.ratings.power * 1.0 + p.ratings.eye * 0.5;
+  p.ratings.contact * 1.0 + p.ratings.power * 1.0 + p.ratings.discipline * 0.5;
 
-const onBaseScore = (p: Player): number => p.ratings.eye + p.ratings.speed * 0.6;
+const onBaseScore = (p: Player): number => p.ratings.discipline + p.ratings.speed * 0.6;
 
-const fieldingScore = (p: Player): number => p.ratings.fielding * 1.5 + p.ratings.arm;
+const fieldingScore = (p: Player): number =>
+  p.ratings.glove * 1.0 + p.ratings.range * 0.6 + p.ratings.armStrength * 0.4;
 
 // Pick the best player for a defensive position out of the active roster.
 // Prefers primary position; otherwise considers secondaryPositions; otherwise any non-DH.

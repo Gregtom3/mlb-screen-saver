@@ -42,7 +42,7 @@ const playFirstNDays = (seed: number, days: number): { league: ReturnType<typeof
         stadiumQuirk: stadium.quirk,
       };
       const events = runGame(input);
-      games.push({ events, input });
+      games.push({ events, input, day });
     }
   }
   return { league, games };
@@ -51,7 +51,7 @@ const playFirstNDays = (seed: number, days: number): { league: ReturnType<typeof
 describe('buildSeasonAggregates', () => {
   it('produces team rows for every team after one day', () => {
     const { league, games } = playFirstNDays(0xb5e_d1, 1);
-    const agg = buildSeasonAggregates(games, league.teams);
+    const agg = buildSeasonAggregates(games, league.teams, league.players);
     expect(agg.teams.size).toBe(league.teams.length);
     let totalW = 0;
     let totalL = 0;
@@ -65,7 +65,7 @@ describe('buildSeasonAggregates', () => {
 
   it('every PA shows up in either AB, walks/HBP, or SF/SH', () => {
     const { league, games } = playFirstNDays(0xb5e_d2, 1);
-    const agg = buildSeasonAggregates(games, league.teams);
+    const agg = buildSeasonAggregates(games, league.teams, league.players);
     for (const line of agg.batting.values()) {
       const accounted = line.AB + line.BB + line.HBP + line.SF + line.SH;
       expect(accounted).toBe(line.PA);
@@ -74,7 +74,7 @@ describe('buildSeasonAggregates', () => {
 
   it('hits split as singles + doubles + triples + HR', () => {
     const { league, games } = playFirstNDays(0xb5e_d3, 1);
-    const agg = buildSeasonAggregates(games, league.teams);
+    const agg = buildSeasonAggregates(games, league.teams, league.players);
     for (const line of agg.batting.values()) {
       expect(line.doubles + line.triples + line.HR).toBeLessThanOrEqual(line.H);
     }
@@ -82,7 +82,7 @@ describe('buildSeasonAggregates', () => {
 
   it('pitcher BF equals batter PA on the matched game side', () => {
     const { league, games } = playFirstNDays(0xb5e_d4, 1);
-    const agg = buildSeasonAggregates(games, league.teams);
+    const agg = buildSeasonAggregates(games, league.teams, league.players);
     let totalBatterPA = 0;
     let totalPitcherBF = 0;
     for (const line of agg.batting.values()) totalBatterPA += line.PA;
@@ -92,7 +92,7 @@ describe('buildSeasonAggregates', () => {
 
   it('runs allowed by pitchers equals runs scored by batters across the league', () => {
     const { league, games } = playFirstNDays(0xb5e_d5, 1);
-    const agg = buildSeasonAggregates(games, league.teams);
+    const agg = buildSeasonAggregates(games, league.teams, league.players);
     let runsScored = 0;
     let runsAllowed = 0;
     for (const line of agg.batting.values()) runsScored += line.R;
@@ -102,7 +102,7 @@ describe('buildSeasonAggregates', () => {
 
   it('rate stats stay in sane ranges over a 4-day batch', () => {
     const { league, games } = playFirstNDays(0xb5e_d6, 4);
-    const agg = buildSeasonAggregates(games, league.teams);
+    const agg = buildSeasonAggregates(games, league.teams, league.players);
     for (const line of agg.batting.values()) {
       const avg = battingAvg(line);
       const opsVal = ops(line);
@@ -112,7 +112,10 @@ describe('buildSeasonAggregates', () => {
       expect(opsVal).toBeLessThan(4);
     }
     for (const line of agg.pitching.values()) {
-      if (line.IPouts === 0) continue;
+      // Tiny-sample relievers can run an absurd ERA over a 4-day batch
+      // (one bad outing in a single AB → 50+ ERA). Filter to "≥ 5 IP" so
+      // the sanity bound only checks pitchers who actually have a sample.
+      if (line.IPouts < 15) continue;
       const eraVal = era(line);
       expect(eraVal).toBeGreaterThanOrEqual(0);
       expect(eraVal).toBeLessThan(40);
@@ -128,12 +131,12 @@ describe('buildSeasonAggregates', () => {
 
 describe('qualifiers', () => {
   it('scales hitter qualifier with team games played', () => {
-    const line = { PA: 10, AB: 8, R: 0, H: 0, doubles: 0, triples: 0, HR: 0, RBI: 0, BB: 0, HBP: 0, SO: 0, SF: 0, SH: 0, GIDP: 0, WPA: 0, G: 4, playerId: 'x', teamId: 'y' };
+    const line = { PA: 10, AB: 8, R: 0, H: 0, doubles: 0, triples: 0, HR: 0, RBI: 0, BB: 0, HBP: 0, SO: 0, SF: 0, SH: 0, GIDP: 0, WPA: 0, G: 4, playerId: 'x', teamId: 'y', splits: {}, hitChart: [], gameLog: [], byMonth: {} };
     expect(isQualifiedBatter(line, 3)).toBe(true);  // need ≥ 9.3 PA
     expect(isQualifiedBatter(line, 5)).toBe(false); // need ≥ 15.5 PA
   });
   it('scales pitcher qualifier with team games played', () => {
-    const line = { IPouts: 9, H: 0, R: 0, ER: 0, HR: 0, BB: 0, HBP: 0, SO: 0, BF: 0, WPA: 0, G: 1, GS: 1, W: 0, L: 0, SV: 0, playerId: 'x', teamId: 'y' };
+    const line = { IPouts: 9, H: 0, R: 0, ER: 0, HR: 0, BB: 0, HBP: 0, SO: 0, BF: 0, WPA: 0, G: 1, GS: 1, W: 0, L: 0, SV: 0, playerId: 'x', teamId: 'y', splits: {}, gameLog: [] };
     expect(isQualifiedPitcher(line, 3)).toBe(true); // need ≥ 9 outs
     expect(isQualifiedPitcher(line, 4)).toBe(false); // need ≥ 12 outs
   });

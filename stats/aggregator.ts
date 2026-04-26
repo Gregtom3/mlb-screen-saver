@@ -1,29 +1,45 @@
 import type { AtBatOutcome, GameInput, SimEvent } from '../sim/types.js';
-import type { PlayerId, Team, TeamId } from '../world/types.js';
+import type { GameId, PlayerId, Player, Team, TeamId } from '../world/types.js';
 import {
   emptyBattingLine,
   emptyPitchingLine,
   emptySeasonAggregates,
   emptyTeamLine,
+  type BattingGameLogEntry,
   type BattingLine,
+  type BattingSplitKey,
+  type GameWPTimeline,
+  type HitLocation,
+  type PitchingGameLogEntry,
   type PitchingLine,
+  type PitchingSplitKey,
   type SeasonAggregates,
   type TeamLine,
 } from './types.js';
 import { homeWinProb, type WPState } from './wp.js';
 
-// Phase 5.5 step 5.5.1 — aggregator. Walks one game's SimEvent log once and
-// folds its results into season-level BattingLine, PitchingLine, and
-// TeamLine rows. Reads only the canonical event log and the GameInput;
-// never mutates the sim.
+// Phase 5.5 part 2 aggregator. Walks one finished game's SimEvent log once
+// and folds every batter PA, pitcher PA, runner movement, hit ball, split,
+// game-log entry, and WP sample into the season aggregates.
+//
+// Ground rules:
+// - Pure: reads only (events, GameInput, world). Mutates only the supplied
+//   `agg`. Web-Worker safe.
+// - Splits are plate-appearance-level; the aggregator captures the split
+//   keys from the *state at AB start* (vs L/R, home/away, RISP, late&close).
+// - Incremental == full rebuild: calling aggregateGame N times in a loop
+//   produces the same numbers as buildSeasonAggregates([g1..gN]). Tested.
 
 export interface FinishedGame {
   readonly events: readonly SimEvent[];
   readonly input: GameInput;
+  /** Calendar day this game was played, used by gameLog and byMonth splits. */
+  readonly day: number;
 }
 
-interface AggregatorContext {
+export interface AggregatorContext {
   readonly teamsById: ReadonlyMap<TeamId, Team>;
+  readonly playerIndex: ReadonlyMap<PlayerId, Player>;
 }
 
 const getOrCreateBatting = (
@@ -61,6 +77,41 @@ const getOrCreateTeam = (agg: SeasonAggregates, teamId: TeamId): TeamLine => {
   return line;
 };
 
+// Split rows live nested inside the parent line. Same shape, sans nested
+// splits/hitChart/gameLog (those are top-level only).
+const getOrCreateBattingSplit = (
+  parent: BattingLine,
+  key: BattingSplitKey,
+): BattingLine => {
+  let split = parent.splits[key];
+  if (!split) {
+    split = emptyBattingLine(parent.playerId, parent.teamId);
+    parent.splits[key] = split;
+  }
+  return split;
+};
+
+const getOrCreatePitchingSplit = (
+  parent: PitchingLine,
+  key: PitchingSplitKey,
+): PitchingLine => {
+  let split = parent.splits[key];
+  if (!split) {
+    split = emptyPitchingLine(parent.playerId, parent.teamId);
+    parent.splits[key] = split;
+  }
+  return split;
+};
+
+const getOrCreateMonthSplit = (parent: BattingLine, monthKey: string): BattingLine => {
+  let m = parent.byMonth[monthKey];
+  if (!m) {
+    m = emptyBattingLine(parent.playerId, parent.teamId);
+    parent.byMonth[monthKey] = m;
+  }
+  return m;
+};
+
 const outsAddedFor = (outcome: AtBatOutcome): number => {
   switch (outcome) {
     case 'strikeout-looking':
@@ -84,7 +135,7 @@ const outsAddedFor = (outcome: AtBatOutcome): number => {
 
 interface OutcomeEffects {
   readonly atBatCounts: boolean;
-  readonly hits: number; // 0 or 1
+  readonly hits: number;
   readonly doubles: number;
   readonly triples: number;
   readonly homeRuns: number;
@@ -132,13 +183,52 @@ const sameDivision = (a: TeamId, b: TeamId, ctx: AggregatorContext): boolean => 
   return !!ta && !!tb && ta.division === tb.division;
 };
 
+// 162-game season fits ~21 hours; 6 days = 1 month here.
+const monthKeyFor = (day: number): string => `M${Math.ceil(day / 6)}`;
+
+// Apply per-AB counters into a target line. Used both for the top-line and
+// each active split, so PA/AB/H bookkeeping stays consistent.
+const foldAtBat = (line: BattingLine, eff: OutcomeEffects, rbis: number, runs: number): void => {
+  line.PA += 1;
+  if (eff.atBatCounts) line.AB += 1;
+  line.H += eff.hits;
+  line.doubles += eff.doubles;
+  line.triples += eff.triples;
+  line.HR += eff.homeRuns;
+  line.BB += eff.walks;
+  line.HBP += eff.hbp;
+  line.SO += eff.strikeouts;
+  line.SF += eff.sacFlies;
+  line.SH += eff.sacBunts;
+  line.GIDP += eff.gidp;
+  line.RBI += rbis;
+  line.R += runs;
+};
+
+const foldPitcherAtBat = (
+  line: PitchingLine,
+  eff: OutcomeEffects,
+  outcome: AtBatOutcome,
+  runsAllowed: number,
+): void => {
+  line.BF += 1;
+  line.H += eff.hits;
+  line.HR += eff.homeRuns;
+  line.BB += eff.walks;
+  line.HBP += eff.hbp;
+  line.SO += eff.strikeouts;
+  line.R += runsAllowed;
+  line.ER += runsAllowed;
+  line.IPouts += outsAddedFor(outcome);
+};
+
 // Apply one finished game's events into the aggregates. Mutates `agg`.
 export const aggregateGame = (
   game: FinishedGame,
   agg: SeasonAggregates,
   ctx: AggregatorContext,
 ): void => {
-  const { events, input } = game;
+  const { events, input, day } = game;
   let inning = 1;
   let half: 'top' | 'bottom' = 'top';
   let outs = 0;
@@ -153,12 +243,26 @@ export const aggregateGame = (
   // Track who appeared in this game for G++.
   const battersSeen = new Set<PlayerId>();
   const pitchersSeen = new Set<PlayerId>();
+  // Per-game scratch entries — folded into season game logs at gameEnd.
+  const battingGameRows = new Map<PlayerId, BattingGameLogEntry>();
+  const pitchingGameRows = new Map<PlayerId, PitchingGameLogEntry>();
 
-  // Per-AB scratch state for WPA.
+  // Per-AB scratch state.
   let abStartState: WPState | null = null;
   let abPitcherId: PlayerId | null = null;
-  let abRunsScored = 0; // runs that crossed during this AB
+  let abRunsScored = 0;
+  let abRunnerIds: PlayerId[] = []; // runners credited with R during this AB
+  let abContact: { ballPath: { landingX: number; landingY: number; exitVeloMph: number; launchAngleDeg: number } } | null = null;
 
+  // WP timeline: append a sample on every state-mutating event.
+  const wpTimeline: GameWPTimeline = {
+    gameId: input.gameId,
+    homeTeamId: input.home.teamId,
+    awayTeamId: input.away.teamId,
+    samples: [],
+  };
+
+  let evIdx = -1;
   const captureStateForWP = (): WPState => ({
     inning,
     half,
@@ -168,32 +272,114 @@ export const aggregateGame = (
     bases: { first: bases.first, second: bases.second, third: bases.third },
   });
 
+  const ensureBattingRow = (id: PlayerId, team: TeamId, oppTeam: TeamId, home: boolean) => {
+    let row = battingGameRows.get(id);
+    if (!row) {
+      row = {
+        gameId: input.gameId, day, opponentTeamId: oppTeam, home,
+        PA: 0, AB: 0, H: 0, doubles: 0, triples: 0, HR: 0,
+        RBI: 0, BB: 0, SO: 0, R: 0, WPA: 0,
+      };
+      battingGameRows.set(id, row);
+    }
+    void team;
+    return row;
+  };
+
+  const ensurePitchingRow = (id: PlayerId, team: TeamId, oppTeam: TeamId, home: boolean) => {
+    let row = pitchingGameRows.get(id);
+    if (!row) {
+      row = {
+        gameId: input.gameId, day, opponentTeamId: oppTeam, home,
+        IPouts: 0, BF: 0, H: 0, R: 0, ER: 0, BB: 0, SO: 0, HR: 0,
+        WPA: 0, decision: 'ND',
+      };
+      pitchingGameRows.set(id, row);
+    }
+    void team;
+    return row;
+  };
+
+  // Determine which split keys apply at AB start.
+  const battingSplitKeys = (
+    batter: Player,
+    pitcher: Player,
+    battingTeamIsHome: boolean,
+  ): BattingSplitKey[] => {
+    const keys: BattingSplitKey[] = [];
+    keys.push(pitcher.throws === 'L' ? 'vsLHP' : 'vsRHP');
+    keys.push(battingTeamIsHome ? 'home' : 'away');
+    if (bases.second || bases.third) keys.push('RISP');
+    if ((bases.second || bases.third) && outs === 2) keys.push('risp2Out');
+    // Late-and-close: 7th+ inning, batting team within 2 runs (or tying run on/at-bat).
+    const battingScore = battingTeamIsHome ? scoreHome : scoreAway;
+    const fieldingScore = battingTeamIsHome ? scoreAway : scoreHome;
+    if (inning >= 7 && Math.abs(battingScore - fieldingScore) <= 2) {
+      keys.push('lateAndClose');
+    }
+    return keys;
+  };
+
+  const pitchingSplitKeys = (
+    batter: Player,
+    pitchingTeamIsHome: boolean,
+  ): PitchingSplitKey[] => {
+    const keys: PitchingSplitKey[] = [];
+    keys.push(batter.bats === 'L' ? 'vsLHB' : 'vsRHB');
+    keys.push(pitchingTeamIsHome ? 'home' : 'away');
+    const pitchingScore = pitchingTeamIsHome ? scoreHome : scoreAway;
+    const battingScore = pitchingTeamIsHome ? scoreAway : scoreHome;
+    if (inning >= 7 && Math.abs(pitchingScore - battingScore) <= 2) {
+      keys.push('lateAndClose');
+    }
+    return keys;
+  };
+
   for (const ev of events) {
+    evIdx += 1;
     switch (ev.kind) {
-      case 'gameStart':
+      case 'gameStart': {
+        // Seed the WP timeline.
+        wpTimeline.samples.push({
+          eventIdx: evIdx,
+          wpHome: homeWinProb(captureStateForWP()),
+          inning,
+          half,
+          delta: 0,
+        });
         break;
+      }
       case 'pitch': {
         const battingTeam = half === 'top' ? input.away.teamId : input.home.teamId;
         const fieldingPitcher = half === 'top' ? homePitcherId : awayPitcherId;
+        const fieldingTeam = half === 'top' ? input.home.teamId : input.away.teamId;
         currentBatterId = ev.batterId;
         battersSeen.add(currentBatterId);
         pitchersSeen.add(fieldingPitcher);
-        // Lazily ensure rows exist so first-pitch state is consistent.
         getOrCreateBatting(agg, currentBatterId, battingTeam);
-        getOrCreatePitching(
-          agg,
+        getOrCreatePitching(agg, fieldingPitcher, fieldingTeam);
+        ensureBattingRow(
+          currentBatterId,
+          battingTeam,
+          fieldingTeam,
+          half === 'bottom', // batting team is home in bottom of inning
+        );
+        ensurePitchingRow(
           fieldingPitcher,
-          half === 'top' ? input.home.teamId : input.away.teamId,
+          fieldingTeam,
+          battingTeam,
+          half === 'top', // pitching team is home in top of inning
         );
         if (abStartState === null) {
           abStartState = captureStateForWP();
           abPitcherId = fieldingPitcher;
           abRunsScored = 0;
+          abRunnerIds = [];
+          abContact = null;
         }
         break;
       }
       case 'baserunner': {
-        // Vacate `from`, occupy `to` (unless out or scoring).
         if (ev.from === 1) bases.first = false;
         else if (ev.from === 2) bases.second = false;
         else if (ev.from === 3) bases.third = false;
@@ -203,26 +389,37 @@ export const aggregateGame = (
           else if (ev.to === 3) bases.third = true;
           else if (ev.to === 0) {
             abRunsScored += 1;
-            // Score column update — runs go to whichever side is batting.
+            abRunnerIds.push(ev.runnerId);
             if (half === 'top') scoreAway += 1;
             else scoreHome += 1;
-            // Credit the runner with R++.
             const battingTeam = half === 'top' ? input.away.teamId : input.home.teamId;
+            const fieldingTeam = half === 'top' ? input.home.teamId : input.away.teamId;
             const runnerLine = getOrCreateBatting(agg, ev.runnerId, battingTeam);
-            runnerLine.R += 1;
+            // The R++ happens at atBatEnd based on abRunnerIds, so don't
+            // double-credit here. Just ensure the per-game row exists.
+            void runnerLine;
+            ensureBattingRow(
+              ev.runnerId,
+              battingTeam,
+              fieldingTeam,
+              half === 'bottom',
+            );
           }
         }
         break;
       }
-      case 'contact':
+      case 'contact': {
+        abContact = { ballPath: ev.ballPath };
         break;
+      }
       case 'sub': {
-        // Pitching change. The fielding side's pitcher swaps.
         if (half === 'top') homePitcherId = ev.inPlayerId;
         else awayPitcherId = ev.inPlayerId;
         const fieldingTeam = half === 'top' ? input.home.teamId : input.away.teamId;
+        const battingTeam = half === 'top' ? input.away.teamId : input.home.teamId;
         pitchersSeen.add(ev.inPlayerId);
         getOrCreatePitching(agg, ev.inPlayerId, fieldingTeam);
+        ensurePitchingRow(ev.inPlayerId, fieldingTeam, battingTeam, half === 'top');
         break;
       }
       case 'atBatEnd': {
@@ -230,55 +427,150 @@ export const aggregateGame = (
         const battingTeam = half === 'top' ? input.away.teamId : input.home.teamId;
         const fieldingTeam = half === 'top' ? input.home.teamId : input.away.teamId;
         const fieldingPitcher = abPitcherId ?? (half === 'top' ? homePitcherId : awayPitcherId);
+        const battingTeamIsHome = half === 'bottom';
 
         const eff = effectsFor(ev.outcome);
         const bLine = getOrCreateBatting(agg, currentBatterId, battingTeam);
-        bLine.PA += 1;
-        if (eff.atBatCounts) bLine.AB += 1;
-        bLine.H += eff.hits;
-        bLine.doubles += eff.doubles;
-        bLine.triples += eff.triples;
-        bLine.HR += eff.homeRuns;
-        bLine.BB += eff.walks;
-        bLine.HBP += eff.hbp;
-        bLine.SO += eff.strikeouts;
-        bLine.SF += eff.sacFlies;
-        bLine.SH += eff.sacBunts;
-        bLine.GIDP += eff.gidp;
-        bLine.RBI += ev.rbis;
-
         const pLine = getOrCreatePitching(agg, fieldingPitcher, fieldingTeam);
-        pLine.BF += 1;
-        pLine.H += eff.hits;
-        pLine.HR += eff.homeRuns;
-        pLine.BB += eff.walks;
-        pLine.HBP += eff.hbp;
-        pLine.SO += eff.strikeouts;
-        // ER currently == R since the sim doesn't model errors. Refine when
-        // ROE / fielding errors enter the model.
-        pLine.R += abRunsScored;
-        pLine.ER += abRunsScored;
-        pLine.IPouts += outsAddedFor(ev.outcome);
 
-        // Update outs *after* logging — the next AB starts at this state.
+        // Top-line + per-game.
+        foldAtBat(bLine, eff, ev.rbis, 0);
+        foldPitcherAtBat(pLine, eff, ev.outcome, abRunsScored);
+
+        // Per-game row.
+        const bRow = ensureBattingRow(
+          currentBatterId,
+          battingTeam,
+          fieldingTeam,
+          battingTeamIsHome,
+        );
+        bRow.PA += 1;
+        if (eff.atBatCounts) bRow.AB += 1;
+        bRow.H += eff.hits;
+        bRow.doubles += eff.doubles;
+        bRow.triples += eff.triples;
+        bRow.HR += eff.homeRuns;
+        bRow.BB += eff.walks;
+        bRow.SO += eff.strikeouts;
+        bRow.RBI += ev.rbis;
+
+        const pRow = ensurePitchingRow(
+          fieldingPitcher,
+          fieldingTeam,
+          battingTeam,
+          !battingTeamIsHome,
+        );
+        pRow.BF += 1;
+        pRow.IPouts += outsAddedFor(ev.outcome);
+        pRow.H += eff.hits;
+        pRow.HR += eff.homeRuns;
+        pRow.BB += eff.walks;
+        pRow.SO += eff.strikeouts;
+        pRow.R += abRunsScored;
+        pRow.ER += abRunsScored;
+
+        // Credit each run-scoring runner with R++ on top-line + per-game row.
+        for (const runnerId of abRunnerIds) {
+          const runnerLine = getOrCreateBatting(agg, runnerId, battingTeam);
+          runnerLine.R += 1;
+          const runnerRow = ensureBattingRow(
+            runnerId,
+            battingTeam,
+            fieldingTeam,
+            battingTeamIsHome,
+          );
+          runnerRow.R += 1;
+        }
+
+        // Splits.
+        const batter = ctx.playerIndex.get(currentBatterId);
+        const pitcher = ctx.playerIndex.get(fieldingPitcher);
+        if (batter && pitcher) {
+          for (const k of battingSplitKeys(batter, pitcher, battingTeamIsHome)) {
+            const split = getOrCreateBattingSplit(bLine, k);
+            foldAtBat(split, eff, ev.rbis, 0);
+          }
+          for (const k of pitchingSplitKeys(batter, !battingTeamIsHome)) {
+            const split = getOrCreatePitchingSplit(pLine, k);
+            foldPitcherAtBat(split, eff, ev.outcome, abRunsScored);
+          }
+        }
+
+        // By-month split for batter.
+        const monthLine = getOrCreateMonthSplit(bLine, monthKeyFor(day));
+        foldAtBat(monthLine, eff, ev.rbis, 0);
+
+        // Spray chart — only contact outcomes have a ballPath.
+        if (abContact) {
+          const isHit =
+            ev.outcome === 'single' ||
+            ev.outcome === 'double' ||
+            ev.outcome === 'triple' ||
+            ev.outcome === 'home-run';
+          const sprayOutcome: HitLocation['outcome'] =
+            ev.outcome === 'single' ? 'single' :
+            ev.outcome === 'double' ? 'double' :
+            ev.outcome === 'triple' ? 'triple' :
+            ev.outcome === 'home-run' ? 'home-run' : 'out';
+          bLine.hitChart.push({
+            x: abContact.ballPath.landingX,
+            y: abContact.ballPath.landingY,
+            outcome: sprayOutcome,
+            exitVeloMph: abContact.ballPath.exitVeloMph,
+            launchAngleDeg: abContact.ballPath.launchAngleDeg,
+          });
+          void isHit;
+        }
+
+        // Update outs *after* logging.
         outs += outsAddedFor(ev.outcome);
 
-        // WPA: WP after the play minus WP before, batter-team-relative.
+        // WPA + WP timeline sample.
         if (abStartState) {
           const stateAfter = captureStateForWP();
           const wpBefore = homeWinProb(abStartState);
           const wpAfter = homeWinProb(stateAfter);
-          const battingTeamIsHome = half === 'bottom';
-          const wpaForBattingTeam = battingTeamIsHome
+          const battingTeamIsHomeNow = battingTeamIsHome;
+          const wpaForBattingTeam = battingTeamIsHomeNow
             ? wpAfter - wpBefore
             : wpBefore - wpAfter;
           bLine.WPA += wpaForBattingTeam;
-          // Pitcher's WPA mirrors — positive means the pitcher's TEAM gained WP.
+          bRow.WPA += wpaForBattingTeam;
           pLine.WPA -= wpaForBattingTeam;
+          pRow.WPA -= wpaForBattingTeam;
+
+          // Splits also accumulate WPA.
+          if (batter && pitcher) {
+            for (const k of battingSplitKeys(batter, pitcher, battingTeamIsHome)) {
+              const split = getOrCreateBattingSplit(bLine, k);
+              split.WPA += wpaForBattingTeam;
+            }
+            for (const k of pitchingSplitKeys(batter, !battingTeamIsHome)) {
+              const split = getOrCreatePitchingSplit(pLine, k);
+              split.WPA -= wpaForBattingTeam;
+            }
+          }
+          monthLine.WPA += wpaForBattingTeam;
+
+          // Timeline sample with annotation for big swings.
+          const note =
+            Math.abs(wpAfter - wpBefore) > 0.10
+              ? annotationFor(ev.outcome, ev.rbis, currentBatterId, ctx)
+              : undefined;
+          wpTimeline.samples.push({
+            eventIdx: evIdx,
+            wpHome: wpAfter,
+            inning,
+            half,
+            delta: wpaForBattingTeam,
+            ...(note ? { note } : {}),
+          });
         }
         abStartState = null;
         abPitcherId = null;
         abRunsScored = 0;
+        abRunnerIds = [];
+        abContact = null;
         currentBatterId = null;
         break;
       }
@@ -289,6 +581,14 @@ export const aggregateGame = (
         outs = 0;
         if (ev.halfInning === 'top') half = 'bottom';
         else { inning += 1; half = 'top'; }
+        // Sample WP at half-inning boundaries too so the curve has texture.
+        wpTimeline.samples.push({
+          eventIdx: evIdx,
+          wpHome: homeWinProb(captureStateForWP()),
+          inning,
+          half,
+          delta: 0,
+        });
         break;
       }
       case 'gameEnd': {
@@ -315,15 +615,11 @@ export const aggregateGame = (
         awayTeam.RS += ev.finalRuns.away;
         awayTeam.RA += ev.finalRuns.home;
         if (sameDivision(input.home.teamId, input.away.teamId, ctx)) {
-          if (homeWon) {
-            homeTeam.divW += 1;
-            awayTeam.divL += 1;
-          } else {
-            homeTeam.divL += 1;
-            awayTeam.divW += 1;
-          }
+          if (homeWon) { homeTeam.divW += 1; awayTeam.divL += 1; }
+          else { homeTeam.divL += 1; awayTeam.divW += 1; }
         }
-        // Increment G for everyone who appeared.
+
+        // G for everyone who appeared.
         for (const id of battersSeen) {
           const line = agg.batting.get(id);
           if (line) line.G += 1;
@@ -337,23 +633,85 @@ export const aggregateGame = (
         const awayStarter = agg.pitching.get(input.away.startingPitcherId);
         if (homeStarter) homeStarter.GS += 1;
         if (awayStarter) awayStarter.GS += 1;
+
+        // Pitcher decisions: starter of the winning side gets W, losing
+        // starter gets L. Bullpen decisions are deferred — accurate save /
+        // hold / blown-save logic lands with the manager-knobs phase.
+        const winningStarter = homeWon
+          ? agg.pitching.get(input.home.startingPitcherId)
+          : agg.pitching.get(input.away.startingPitcherId);
+        const losingStarter = homeWon
+          ? agg.pitching.get(input.away.startingPitcherId)
+          : agg.pitching.get(input.home.startingPitcherId);
+        if (winningStarter) winningStarter.W += 1;
+        if (losingStarter) losingStarter.L += 1;
+        const winningStarterRow = pitchingGameRows.get(
+          homeWon ? input.home.startingPitcherId : input.away.startingPitcherId,
+        );
+        const losingStarterRow = pitchingGameRows.get(
+          homeWon ? input.away.startingPitcherId : input.home.startingPitcherId,
+        );
+        if (winningStarterRow) winningStarterRow.decision = 'W';
+        if (losingStarterRow) losingStarterRow.decision = 'L';
+
+        // Append per-game rows to season game logs.
+        for (const [id, row] of battingGameRows) {
+          const line = agg.batting.get(id);
+          if (line) line.gameLog.push(row);
+        }
+        for (const [id, row] of pitchingGameRows) {
+          const line = agg.pitching.get(id);
+          if (line) line.gameLog.push(row);
+        }
+
+        // Stash the WP timeline.
+        agg.wpTimelines.set(input.gameId, wpTimeline);
         break;
       }
     }
   }
 };
 
+const annotationFor = (
+  outcome: AtBatOutcome,
+  rbis: number,
+  batterId: PlayerId,
+  ctx: AggregatorContext,
+): string => {
+  const player = ctx.playerIndex.get(batterId);
+  const name = player ? player.lastName : batterId;
+  switch (outcome) {
+    case 'home-run':
+      return rbis > 1 ? `${rbis}-run HR by ${name}` : `HR by ${name}`;
+    case 'triple':
+      return `Triple by ${name}`;
+    case 'double':
+      return rbis > 0 ? `RBI 2B by ${name}` : `Double by ${name}`;
+    case 'single':
+      return rbis > 0 ? `RBI single by ${name}` : `Single by ${name}`;
+    case 'walk':
+      return `BB to ${name}`;
+    case 'strikeout-looking':
+    case 'strikeout-swinging':
+      return `K of ${name}`;
+    case 'double-play':
+      return `Double play`;
+    default:
+      return `${outcome} (${name})`;
+  }
+};
+
 export const buildSeasonAggregates = (
   games: readonly FinishedGame[],
   teams: readonly Team[],
+  players: readonly Player[],
   seasonYear = 1,
 ): SeasonAggregates => {
   const ctx: AggregatorContext = {
     teamsById: new Map(teams.map((t) => [t.id, t])),
+    playerIndex: new Map(players.map((p) => [p.id, p])),
   };
   const agg: SeasonAggregates = { ...emptySeasonAggregates(seasonYear) };
-  // Pre-create rows for every team so the standings table covers everyone
-  // even in single-game test fixtures.
   for (const t of teams) getOrCreateTeam(agg, t.id);
   for (const game of games) {
     aggregateGame(game, agg, ctx);

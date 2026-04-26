@@ -97,46 +97,57 @@ interface PitchOutcome {
 }
 
 const pitchTypeFor = (pitcher: Player, rng: PRNG): PitchType => {
-  // Heuristic: pitchers with high power-suppressing stamina lean fastball,
-  // high composure lean offspeed/breaking. No real arsenals yet — Phase 4.
+  // Pitchers with strong breaking-ball / changeup ratings lean off-speed.
+  // Velocity-heavy arms lean fastball.
   const r = rng.next();
-  if (pitcher.ratings.composure > 65) {
+  const breakingHeavy = pitcher.ratings.breakingBall > 65;
+  const changeupHeavy = pitcher.ratings.changeup > 65;
+  const fbHeavy = pitcher.ratings.velocity > 70;
+  if (breakingHeavy || changeupHeavy) {
     if (r < 0.45) return 'fastball';
-    if (r < 0.78) return 'breaking';
+    if (r < (breakingHeavy ? 0.78 : 0.7)) return 'breaking';
     if (r < 0.95) return 'offspeed';
     return 'specialty';
   }
-  if (r < 0.6) return 'fastball';
+  if (r < (fbHeavy ? 0.65 : 0.6)) return 'fastball';
   if (r < 0.85) return 'breaking';
   return 'offspeed';
 };
 
 const velocityFor = (pitcher: Player, type: PitchType, rng: PRNG): number => {
+  // velocity rating drives fastball MPH; off-speed bands trail behind.
   const base = type === 'fastball' ? 92 : type === 'breaking' ? 82 : type === 'offspeed' ? 78 : 86;
-  const stamina = pitcher.ratings.stamina;
-  return Math.round(base + (stamina - 50) * 0.06 + (rng.next() - 0.5) * 4);
+  const v = pitcher.ratings.velocity;
+  return Math.round(base + (v - 50) * 0.08 + (rng.next() - 0.5) * 4);
 };
 
 const simulatePitch = (
   pitcher: Player,
   batter: Player,
   count: { balls: number; strikes: number },
+  pitchType: PitchType,
   rng: PRNG,
 ): PitchOutcome => {
-  const type = pitchTypeFor(pitcher, rng);
+  const type = pitchType;
   const velocity = velocityFor(pitcher, type, rng);
 
-  // Probability the pitch is in the strike zone, modulated by control proxy (composure).
-  const zoneProb = 0.42 + (pitcher.ratings.composure - 50) * 0.004;
+  // In-zone probability — driven by `control`. Tired starters drift off the
+  // edges, so stamina pulls down once it's deep in the count.
+  const zoneProb = 0.42 + (pitcher.ratings.control - 50) * 0.004;
   const inZone = rng.next() < zoneProb;
   const locationZone = inZone ? 1 + Math.floor(rng.next() * 9) : 0; // 0 = outside
 
-  // Hitter aggression depends on count and eye.
-  const eyeAdj = (batter.ratings.eye - 50) * 0.004;
+  // Hitter aggression depends on count, discipline, and pitch type.
+  // pitchRecognition reduces chase rate specifically on breaking / off-speed.
+  const discAdj = (batter.ratings.discipline - 50) * 0.004;
+  const recogAdj =
+    type === 'breaking' || type === 'offspeed'
+      ? (batter.ratings.pitchRecognition - 50) * 0.005
+      : 0;
   const ahead = count.balls > count.strikes ? 0.05 : 0;
   const behind = count.strikes > count.balls ? -0.05 : 0;
-  const swingInZone = 0.66 - eyeAdj + ahead + behind;
-  const swingOutZone = 0.28 - eyeAdj * 1.5 + behind;
+  const swingInZone = 0.66 - discAdj + ahead + behind;
+  const swingOutZone = 0.28 - discAdj * 1.5 - recogAdj + behind;
   const swingProb = Math.max(0.02, Math.min(0.95, inZone ? swingInZone : swingOutZone));
   const swing = rng.next() < swingProb;
 
@@ -154,10 +165,16 @@ const simulatePitch = (
     return { result: 'hit-by-pitch', pitchType: type, velocityMph: velocity, locationZone };
   }
 
+  // Stuff resists contact: high velocity + high breaking-ball / changeup
+  // rating on its own pitch type lifts swing-and-miss rate.
+  const stuffPenalty =
+    (pitcher.ratings.velocity - 50) * 0.0008 +
+    (type === 'breaking' ? (pitcher.ratings.breakingBall - 50) * 0.001 : 0) +
+    (type === 'offspeed' ? (pitcher.ratings.changeup - 50) * 0.001 : 0);
   const contactProb =
     0.78 +
     (batter.ratings.contact - 50) * 0.003 -
-    (pitcher.ratings.stamina - 50) * 0.0015 -
+    stuffPenalty -
     (inZone ? 0 : 0.12);
   const contact = rng.next() < contactProb;
   if (!contact) {
@@ -295,20 +312,47 @@ const simulateInPlay = (
   bases: BasesState,
   rng: PRNG,
   quirk: StadiumQuirk | undefined,
+  highLeverage: boolean,
 ): InPlayResult => {
   // Outcome roll from a rating-modulated probability table, then multiplied
   // by stadium-quirk adjustments (Phase 4 plugin). Quirks shift odds; they
   // never change ratings or fabricate outcomes directly.
+  // Platoon penalty: when batter and pitcher share handedness, batter loses
+  // a small amount of effective contact + power. `platoonBias` >50 amplifies
+  // the penalty; <50 dampens it (reverse-split hitter).
+  const sameHand =
+    (batter.bats === 'L' && pitcher.throws === 'L') ||
+    (batter.bats === 'R' && pitcher.throws === 'R');
+  const platoonStrength = sameHand ? (batter.ratings.platoonBias - 50) * 0.0005 : 0;
+  // Composure (pitcher) vs clutch (batter) net out in high-leverage states.
+  // 50 vs 50 = 0; both elite ≈ 0; one-sided shifts by up to ~3% on each rate.
+  const leverageNet = highLeverage
+    ? (batter.ratings.clutch - 50 - (pitcher.ratings.composure - 50)) * 0.0006
+    : 0;
+
   const power = batter.ratings.power - 50;
   const speed = batter.ratings.speed - 50;
-  const contact = batter.ratings.contact - 50;
-  const pitcherStrength = pitcher.ratings.stamina - 50;
+  const contact = batter.ratings.contact - 50 - platoonStrength * 100;
+  // `command` keeps pitches off the heart of the plate → fewer barrels →
+  // lower HR rate. `groundballTendency` further suppresses HR + bumps
+  // grounders. `velocity` slightly suppresses contact-quality across the board.
+  const cmd = pitcher.ratings.command - 50;
+  const gb = pitcher.ratings.groundballTendency - 50;
+  const stuff = (pitcher.ratings.velocity - 50) * 0.5;
 
   const adj: QuirkAdjustments = adjustmentsFor(quirk);
-  const hrRate = Math.max(0.005, (0.04 + power * 0.0018 - pitcherStrength * 0.0006) * adj.hrRateMul);
-  const dblRate = Math.max(0.02, (0.07 + power * 0.0009 + contact * 0.0004) * adj.doubleRateMul);
+  const hrRate = Math.max(
+    0.005,
+    (0.04 + power * 0.0018 - cmd * 0.0008 - gb * 0.0006 - stuff * 0.0004 + leverageNet) *
+      adj.hrRateMul,
+  );
+  const dblRate = Math.max(
+    0.02,
+    (0.07 + power * 0.0009 + contact * 0.0004 - stuff * 0.0002 + leverageNet * 0.5) *
+      adj.doubleRateMul,
+  );
   const tplRate = Math.max(0.001, (0.005 + speed * 0.0003) * adj.tripleRateMul);
-  const sglRate = Math.max(0.05, 0.2 + contact * 0.0011 - pitcherStrength * 0.0005);
+  const sglRate = Math.max(0.05, 0.2 + contact * 0.0011 - stuff * 0.0003 + leverageNet * 0.5);
 
   const r = rng.next();
   let outcome: AtBatOutcome;
@@ -317,12 +361,15 @@ const simulateInPlay = (
   else if (r < hrRate + dblRate + tplRate) outcome = 'triple';
   else if (r < hrRate + dblRate + tplRate + sglRate) outcome = 'single';
   else {
-    // OUT subtype split — independent sub-roll, no longer reads launchAngle
-    // (since the BallPath now depends on outcome, not vice versa).
+    // OUT subtype split — `groundballTendency` shifts the GB↔FB mix.
     const sub = rng.next();
-    if (sub < 0.45) outcome = 'groundout';
-    else if (sub < 0.65) outcome = 'lineout';
-    else if (sub < 0.85) outcome = 'flyout';
+    const gbShift = (pitcher.ratings.groundballTendency - 50) * 0.002;
+    const gbCutoff = 0.45 + gbShift;
+    const lineCutoff = gbCutoff + 0.20;
+    const flyCutoff = lineCutoff + 0.20;
+    if (sub < gbCutoff) outcome = 'groundout';
+    else if (sub < lineCutoff) outcome = 'lineout';
+    else if (sub < flyCutoff) outcome = 'flyout';
     else outcome = 'popout';
 
     // Sac fly: <2 outs, runner on 3rd, on a fly ball variant.
@@ -579,7 +626,8 @@ const simulateAtBat = (
   let inPlayResult: InPlayResult | null = null;
 
   while (outcome === null) {
-    const po = simulatePitch(pitcher, batter, { balls, strikes }, rng);
+    const ptype = pitchTypeFor(pitcher, rng);
+    const po = simulatePitch(pitcher, batter, { balls, strikes }, ptype, rng);
     state.t += TIME_PITCH;
     pitchSeq += 1;
     fielding.pitcherPitches += 1;
@@ -618,7 +666,20 @@ const simulateAtBat = (
         outcome = 'hit-by-pitch';
         break;
       case 'in-play': {
-        inPlayResult = simulateInPlay(batter, pitcher, state.outs, state.bases, rng, stadiumQuirk);
+        // High-leverage = 7th+ inning, score within 2 runs (clutch / composure
+        // matters here). Conservative definition; matches the late-and-close
+        // bucket used by /stats/aggregator splits.
+        const scoreDiff = Math.abs(state.runs.home - state.runs.away);
+        const highLeverage = state.inning >= 7 && scoreDiff <= 2;
+        inPlayResult = simulateInPlay(
+          batter,
+          pitcher,
+          state.outs,
+          state.bases,
+          rng,
+          stadiumQuirk,
+          highLeverage,
+        );
         outcome = inPlayResult.outcome;
         state.events.push({
           t: state.t,

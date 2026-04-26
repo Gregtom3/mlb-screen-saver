@@ -5,4 +5,7 @@ export * from './types.js';
 export * from './aggregator.js';
 export * from './derived.js';
 export * from './qualifiers.js';
+export * from './grades.js';
+export * from './awards.js';
+export * from './hot-cold.js';
 export { homeWinProb, type WPState } from './wp.js';
