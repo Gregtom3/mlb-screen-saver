@@ -23,11 +23,16 @@ import type { FieldPoint, ScenePlayer, SceneState } from './types.js';
 //
 // The default playback rate of 20 sim-ticks/wall-sec means we render at ~20×
 // real-time, which lands the ~30-min-per-game screensaver target.
-const PITCH_FLIGHT_TICKS = 4;        // ball flight is highly compressed visually
+//
+// BALL_TIME_SCALE stretches every ball-flight primitive (pitch + post-contact)
+// by this factor. The trajectory shape stays the same — the parabola still
+// returns to z=0 at frac=1 — but the visual flight takes proportionally
+// longer, so the eye can actually track each ball.
+const BALL_TIME_SCALE = 3;
+const PITCH_FLIGHT_TICKS = 4 * BALL_TIME_SCALE;        // mound→plate ball flight
 const RUNNER_TRAVEL_TICKS_PER_BASE = 7; // ~7 sim sec/base — pleasant screensaver pace, slower than real-time
-// Ball-in-play uses BallPath.hangTimeSec directly (computed by /sim/game.ts).
-// Grounders extend slightly so the rolling motion is readable.
-const GROUNDER_EXTRA_TICKS = 0.5;
+// Grounders need a small extra rolling tail for readability.
+const GROUNDER_EXTRA_TICKS = 0.5 * BALL_TIME_SCALE;
 
 interface RunnerLatest {
   readonly from: 0 | 1 | 2 | 3;
@@ -325,11 +330,11 @@ export const buildScene = (
   let ballInFlight = false;
 
   if (lastContact && (!lastPitch || lastContact.t >= lastPitch.t)) {
-    // Post-contact flight. Hangtime drives the duration; vertical motion is
-    // a true parabola so pop-ups go up and come down near the infield while
-    // line drives stay flat.
+    // Post-contact flight. Hangtime drives the trajectory shape; the visual
+    // duration is hangtime × BALL_TIME_SCALE so the eye can track the arc.
     const path = lastContact.path;
-    const totalTicks = path.hangTimeSec + (path.launchAngleDeg <= 0 ? GROUNDER_EXTRA_TICKS : 0);
+    const physicsTicks = path.hangTimeSec + (path.launchAngleDeg <= 0 ? GROUNDER_EXTRA_TICKS / BALL_TIME_SCALE : 0);
+    const totalTicks = physicsTicks * BALL_TIME_SCALE;
     const elapsed = Math.max(0, simTime - lastContact.t);
     const frac = totalTicks > 0 ? Math.min(1, elapsed / totalTicks) : 1;
     ballPos = {
@@ -341,10 +346,15 @@ export const buildScene = (
       ballHeight = 0;
     } else {
       // z(t) = v_z·t − ½g·t² with v_z chosen so z(hangtime) = 0.
+      // We compute z against PHYSICS time (elapsed / BALL_TIME_SCALE) so the
+      // parabola returns to ground exactly at frac=1, just stretched out.
       const G = 32.2;
       const vZ = (G * path.hangTimeSec) / 2;
-      const elapsedSec = elapsed; // 1 sim tick ≈ 1 sec
-      ballHeight = Math.max(0, vZ * elapsedSec - 0.5 * G * elapsedSec * elapsedSec);
+      const physicsElapsed = elapsed / BALL_TIME_SCALE;
+      ballHeight = Math.max(
+        0,
+        vZ * physicsElapsed - 0.5 * G * physicsElapsed * physicsElapsed,
+      );
     }
     ballInFlight = frac < 1;
     ballVisible = frac < 1;
