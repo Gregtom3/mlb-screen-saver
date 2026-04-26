@@ -4,7 +4,7 @@ import {
 } from '../stats/derived.js';
 import {
   type MenuContext, type MenuView, type MenuViewState,
-  labelForView,
+  labelForView, wirePlayerLinks,
 } from './menu-shared.js';
 import { renderLeague } from './menu-league.js';
 import { renderTeam } from './menu-team.js';
@@ -13,7 +13,9 @@ import { renderLive } from './menu-live.js';
 import { renderHistory } from './menu-history.js';
 
 // Phase 5.5 stats menu — orchestrator. Wires the per-view renderers behind a
-// modal overlay and handles tab + breadcrumb state.
+// modal overlay and handles tab + breadcrumb state. Phase 6 adds a back
+// navigation stack so deep-links (e.g. game log → opposing pitcher → hall
+// of fame entry) can be reversed without losing context.
 
 const VIEW_ORDER: readonly MenuView[] = ['league', 'teams', 'players', 'live', 'history'];
 
@@ -42,6 +44,7 @@ export const mountMenu = (
             `<button data-view="${v}" class="${i === 0 ? 'active' : ''}">[${i + 1}] ${labelForView(v)}</button>`,
         ).join('')}
       </div>
+      <button class="menu-back" type="button" aria-label="Back" hidden>← back</button>
       <div class="menu-breadcrumb"></div>
       <button class="menu-close" type="button">[Esc] close</button>
     </div>
@@ -52,20 +55,35 @@ export const mountMenu = (
   const tabs = root.querySelectorAll<HTMLButtonElement>('.menu-tabs button');
   const breadcrumb = root.querySelector<HTMLDivElement>('.menu-breadcrumb')!;
   const closeBtn = root.querySelector<HTMLButtonElement>('.menu-close')!;
+  const backBtn = root.querySelector<HTMLButtonElement>('.menu-back')!;
   const content = root.querySelector<HTMLDivElement>('#menu-content')!;
 
   let state: MenuViewState = { view: 'league' };
+  // Back stack: every navigation that drills deeper pushes the prior state.
+  const backStack: MenuViewState[] = [];
   let isOpen = false;
 
   const teamById = new Map<TeamId, Team>(ctx.teams.map((t) => [t.id, t]));
 
-  const goToPlayer = (playerId: PlayerId) => {
-    state = { view: 'players', selectedPlayer: playerId };
+  const navigate = (next: MenuViewState) => {
+    backStack.push(state);
+    state = next;
     render();
   };
+
+  const goBack = () => {
+    const prev = backStack.pop();
+    if (prev) {
+      state = prev;
+      render();
+    }
+  };
+
+  const goToPlayer = (playerId: PlayerId) => {
+    navigate({ view: 'players', selectedPlayer: playerId });
+  };
   const goToTeam = (teamId: TeamId) => {
-    state = { view: 'teams', selectedTeam: teamId };
-    render();
+    navigate({ view: 'teams', selectedTeam: teamId });
   };
 
   const render = () => {
@@ -74,6 +92,7 @@ export const mountMenu = (
       tab.classList.toggle('active', v === state.view);
     }
     breadcrumb.textContent = breadcrumbFor(state, ctx, teamById);
+    backBtn.hidden = backStack.length === 0;
     content.innerHTML = '';
     switch (state.view) {
       case 'league':
@@ -94,7 +113,7 @@ export const mountMenu = (
       case 'players':
         if (state.selectedPlayer) {
           const p = ctx.playerIndex.get(state.selectedPlayer);
-          if (p) renderPlayer(content, p, ctx, teamById);
+          if (p) renderPlayer(content, p, ctx, teamById, goToPlayer);
           else content.appendChild(emptyText('Unknown player.'));
         } else {
           renderPlayerIndex(content, ctx, teamById, goToPlayer);
@@ -107,28 +126,38 @@ export const mountMenu = (
         });
         break;
       case 'history':
-        renderHistory(content, ctx);
+        renderHistory(content, ctx, teamById, state, navigate, goToPlayer);
         break;
     }
+    // Wire every `[data-player-link]` rendered by the views to navigate.
+    wirePlayerLinks(content, goToPlayer);
   };
 
   for (const tab of tabs) {
     tab.addEventListener('click', () => {
       const v = tab.dataset['view'] as MenuView | undefined;
       if (v) {
+        // Tab clicks reset state for that view and clear the back stack;
+        // they're a "you are here" jump, not a drill-down.
+        backStack.length = 0;
         state = { view: v };
         render();
       }
     });
   }
   closeBtn.addEventListener('click', () => handle.close());
+  backBtn.addEventListener('click', () => goBack());
 
   const handle: MenuHandle = {
     open() { isOpen = true; root.classList.remove('hidden'); render(); },
     close() { isOpen = false; root.classList.add('hidden'); },
     toggle() { if (isOpen) handle.close(); else handle.open(); },
     isOpen() { return isOpen; },
-    setView(view: MenuView) { state = { view }; render(); },
+    setView(view: MenuView) {
+      backStack.length = 0;
+      state = { view };
+      render();
+    },
     refresh() { if (isOpen) render(); },
   };
 
@@ -148,6 +177,22 @@ const breadcrumbFor = (
   if (state.view === 'players' && state.selectedPlayer) {
     const p = ctx.playerIndex.get(state.selectedPlayer);
     if (p) parts.push(`${p.firstName} ${p.lastName}`);
+  }
+  if (state.view === 'history' && state.historyRoute) {
+    switch (state.historyRoute.kind) {
+      case 'season':
+        parts.push(`Season ${state.historyRoute.year}`);
+        break;
+      case 'records':
+        parts.push('Single-season records');
+        break;
+      case 'all-time':
+        parts.push('All-time records');
+        break;
+      case 'hall-of-fame':
+        parts.push('Hall of Fame');
+        break;
+    }
   }
   return parts.join(' › ');
 };

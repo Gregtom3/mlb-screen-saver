@@ -1,4 +1,4 @@
-import type { Player, PlayerRatings, Team, TeamId } from '../world/types.js';
+import type { Player, PlayerId, PlayerRatings, Team, TeamId } from '../world/types.js';
 import type { BattingLine, BattingSplitKey, PitchingLine, PitchingSplitKey } from '../stats/types.js';
 import {
   battingAvg, era, formatAvg, formatEra, formatIp, formatSigned,
@@ -9,7 +9,7 @@ import { battingHotCold, pitchingHotCold } from '../stats/hot-cold.js';
 import { drawPortrait } from './portrait.js';
 import { drawSprayChart } from './spray-chart.js';
 import type { MenuContext } from './menu-shared.js';
-import { emptyState } from './menu-shared.js';
+import { emptyState, escapeHtml, playerNameLink } from './menu-shared.js';
 
 const SPLIT_BATTING: readonly { key: BattingSplitKey | 'season'; label: string }[] = [
   { key: 'season', label: 'Season' },
@@ -36,7 +36,9 @@ export const renderPlayer = (
   player: Player,
   ctx: MenuContext,
   teamById: ReadonlyMap<TeamId, Team>,
+  onPlayerClick: (id: PlayerId) => void,
 ): void => {
+  void onPlayerClick;
   const agg = ctx.getAggregates();
   const team = player.teamId ? teamById.get(player.teamId) : undefined;
   const wrap = document.createElement('div');
@@ -98,16 +100,98 @@ export const renderPlayer = (
   }
 
   // ----- Game log -----
-  if (b && b.gameLog.length > 0) renderGameLogBatting(wrap, b, teamById);
-  if (p && p.gameLog.length > 0) renderGameLogPitching(wrap, p, teamById);
+  if (b && b.gameLog.length > 0) renderGameLogBatting(wrap, b, teamById, ctx, player);
+  if (p && p.gameLog.length > 0) renderGameLogPitching(wrap, p, teamById, ctx, player);
 
-  // Career placeholder.
-  const careerSec = document.createElement('section');
-  careerSec.innerHTML = `<h3>Career</h3>`;
-  careerSec.appendChild(emptyState('Multi-season career stats land in phase 6.'));
-  wrap.appendChild(careerSec);
+  // Career — Phase 6.
+  renderCareer(wrap, player, ctx);
 
   host.appendChild(wrap);
+};
+
+const renderCareer = (host: HTMLElement, player: Player, ctx: MenuContext): void => {
+  const history = ctx.getHistory?.();
+  const sec = document.createElement('section');
+  sec.innerHTML = '<h3>Career</h3>';
+  if (!history || history.seasons.length === 0) {
+    sec.appendChild(emptyState('No prior seasons in this league yet (Phase 6 needs ?priorSeasons=N).'));
+    host.appendChild(sec);
+    return;
+  }
+  const cb = history.careerBatting.get(player.id);
+  const cp = history.careerPitching.get(player.id);
+  if (!cb && !cp) {
+    sec.appendChild(emptyState('No career stats accumulated yet for this player.'));
+    host.appendChild(sec);
+    return;
+  }
+  if (cb && cb.PA > 0) {
+    const tbl = document.createElement('table');
+    tbl.innerHTML = `
+      <thead><tr>
+        <th>Year</th><th>G</th><th>PA</th><th>AB</th><th>H</th>
+        <th>2B</th><th>3B</th><th>HR</th><th>RBI</th>
+        <th>BB</th><th>SO</th><th>AVG</th><th>OPS</th>
+      </tr></thead>
+      <tbody>
+      ${Object.keys(cb.byYear).sort().map((yk) => {
+        const y = parseInt(yk, 10);
+        const line = cb.byYear[y]!;
+        return `<tr>
+          <td>${y}</td>
+          <td>${line.G}</td><td>${line.PA}</td><td>${line.AB}</td><td>${line.H}</td>
+          <td>${line.doubles}</td><td>${line.triples}</td><td>${line.HR}</td><td>${line.RBI}</td>
+          <td>${line.BB}</td><td>${line.SO}</td>
+          <td>${formatAvg(battingAvg(line))}</td>
+          <td>${formatAvg(ops(line))}</td>
+        </tr>`;
+      }).join('')}
+        <tr class="career-total">
+          <td>Career</td>
+          <td>${cb.G}</td><td>${cb.PA}</td><td>${cb.AB}</td><td>${cb.H}</td>
+          <td>${cb.doubles}</td><td>${cb.triples}</td><td>${cb.HR}</td><td>${cb.RBI}</td>
+          <td>${cb.BB}</td><td>${cb.SO}</td>
+          <td>${formatAvg(cb.AB > 0 ? cb.H / cb.AB : 0)}</td>
+          <td>—</td>
+        </tr>
+      </tbody>`;
+    sec.appendChild(tbl);
+  }
+  if (cp && cp.BF > 0) {
+    const tbl = document.createElement('table');
+    tbl.innerHTML = `
+      <thead><tr>
+        <th>Year</th><th>G</th><th>GS</th><th>W</th><th>L</th>
+        <th>IP</th><th>H</th><th>ER</th><th>BB</th><th>SO</th>
+        <th>HR</th><th>ERA</th><th>WHIP</th>
+      </tr></thead>
+      <tbody>
+      ${Object.keys(cp.byYear).sort().map((yk) => {
+        const y = parseInt(yk, 10);
+        const line = cp.byYear[y]!;
+        return `<tr>
+          <td>${y}</td>
+          <td>${line.G}</td><td>${line.GS}</td><td>${line.W}</td><td>${line.L}</td>
+          <td>${formatIp(line)}</td>
+          <td>${line.H}</td><td>${line.ER}</td><td>${line.BB}</td><td>${line.SO}</td>
+          <td>${line.HR}</td>
+          <td>${formatEra(era(line))}</td>
+          <td>${formatWhip(whip(line))}</td>
+        </tr>`;
+      }).join('')}
+        <tr class="career-total">
+          <td>Career</td>
+          <td>${cp.G}</td><td>${cp.GS}</td><td>${cp.W}</td><td>${cp.L}</td>
+          <td>${(cp.IPouts / 3).toFixed(1)}</td>
+          <td>${cp.H}</td><td>${cp.ER}</td><td>${cp.BB}</td><td>${cp.SO}</td>
+          <td>${cp.HR}</td>
+          <td>${formatEra(cp.IPouts > 0 ? (cp.ER * 27) / cp.IPouts : 0)}</td>
+          <td>${formatWhip(cp.IPouts > 0 ? ((cp.BB + cp.H) * 3) / cp.IPouts : 0)}</td>
+        </tr>
+      </tbody>`;
+    sec.appendChild(tbl);
+  }
+  host.appendChild(sec);
 };
 
 const renderAttributePanel = (host: HTMLElement, player: Player): void => {
@@ -260,24 +344,47 @@ const renderPitching = (host: HTMLElement, p: PitchingLine): void => {
   host.appendChild(sec);
 };
 
+const opposingPitcherName = (
+  ctx: MenuContext,
+  gameId: string,
+  player: Player,
+): { id: string; name: string } | null => {
+  const meta = ctx.getGameMetadata?.(gameId);
+  if (!meta) return null;
+  const isHome = meta.homeTeamId === player.teamId;
+  const oppPid = isHome ? meta.awayStartingPitcher : meta.homeStartingPitcher;
+  const opp = ctx.playerIndex.get(oppPid);
+  if (!opp) return { id: oppPid, name: oppPid };
+  return { id: opp.id, name: `${opp.firstName} ${opp.lastName}` };
+};
+
 const renderGameLogBatting = (
   host: HTMLElement,
   b: BattingLine,
   teamById: ReadonlyMap<TeamId, Team>,
+  ctx: MenuContext,
+  player: Player,
 ): void => {
   const sec = document.createElement('section');
   sec.innerHTML = '<h3>Game log</h3>';
   const table = document.createElement('table');
+  table.className = 'game-log';
   table.innerHTML = `
     <thead><tr>
-      <th>Day</th><th>Vs</th><th>PA</th><th>AB</th><th>H</th><th>HR</th><th>RBI</th><th>BB</th><th>SO</th><th>WPA</th>
+      <th>Day</th><th>Vs</th><th>Opp SP</th>
+      <th>PA</th><th>AB</th><th>H</th><th>HR</th><th>RBI</th><th>BB</th><th>SO</th><th>WPA</th>
     </tr></thead>
     <tbody>
     ${b.gameLog.slice(-30).reverse().map((row) => {
       const opp = teamById.get(row.opponentTeamId);
+      const oppSp = opposingPitcherName(ctx, row.gameId, player);
+      const oppCell = oppSp
+        ? playerNameLink(oppSp.name, oppSp.id)
+        : '—';
       return `<tr>
         <td>${row.day}</td>
-        <td>${row.home ? 'vs' : '@'} ${opp ? opp.abbr : ''}</td>
+        <td>${row.home ? 'vs' : '@'} ${opp ? escapeHtml(opp.abbr) : ''}</td>
+        <td>${oppCell}</td>
         <td>${row.PA}</td><td>${row.AB}</td><td>${row.H}</td><td>${row.HR}</td>
         <td>${row.RBI}</td><td>${row.BB}</td><td>${row.SO}</td>
         <td>${formatSigned(row.WPA, 2)}</td>
@@ -285,6 +392,10 @@ const renderGameLogBatting = (
     }).join('')}
     </tbody>`;
   sec.appendChild(table);
+  const hint = document.createElement('div');
+  hint.className = 'menu-hint';
+  hint.textContent = 'Click an opposing pitcher to see their bio. ← back returns here.';
+  sec.appendChild(hint);
   host.appendChild(sec);
 };
 
@@ -292,22 +403,31 @@ const renderGameLogPitching = (
   host: HTMLElement,
   p: PitchingLine,
   teamById: ReadonlyMap<TeamId, Team>,
+  ctx: MenuContext,
+  player: Player,
 ): void => {
   const sec = document.createElement('section');
   sec.innerHTML = '<h3>Game log</h3>';
   const table = document.createElement('table');
+  table.className = 'game-log';
   table.innerHTML = `
     <thead><tr>
-      <th>Day</th><th>Vs</th><th>Dec</th><th>IP</th><th>H</th><th>R</th><th>ER</th><th>BB</th><th>SO</th><th>HR</th><th>WPA</th>
+      <th>Day</th><th>Vs</th><th>Opp SP</th><th>Dec</th>
+      <th>IP</th><th>H</th><th>R</th><th>ER</th><th>BB</th><th>SO</th><th>HR</th><th>WPA</th>
     </tr></thead>
     <tbody>
     ${p.gameLog.slice(-30).reverse().map((row) => {
       const opp = teamById.get(row.opponentTeamId);
+      const oppSp = opposingPitcherName(ctx, row.gameId, player);
+      const oppCell = oppSp
+        ? playerNameLink(oppSp.name, oppSp.id)
+        : '—';
       const ipFull = Math.floor(row.IPouts / 3);
       const ipFrac = row.IPouts % 3;
       return `<tr>
         <td>${row.day}</td>
-        <td>${row.home ? 'vs' : '@'} ${opp ? opp.abbr : ''}</td>
+        <td>${row.home ? 'vs' : '@'} ${opp ? escapeHtml(opp.abbr) : ''}</td>
+        <td>${oppCell}</td>
         <td>${row.decision}</td>
         <td>${ipFull}.${ipFrac}</td>
         <td>${row.H}</td><td>${row.R}</td><td>${row.ER}</td>
@@ -317,5 +437,9 @@ const renderGameLogPitching = (
     }).join('')}
     </tbody>`;
   sec.appendChild(table);
+  const hint = document.createElement('div');
+  hint.className = 'menu-hint';
+  hint.textContent = 'Click an opposing pitcher to see their bio. ← back returns here.';
+  sec.appendChild(hint);
   host.appendChild(sec);
 };
