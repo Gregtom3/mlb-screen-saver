@@ -183,3 +183,122 @@ export function testTone(when = 0): void {
   osc.start(t0);
   osc.stop(t0 + 0.27);
 }
+
+/** Slide: gravelly dirt-scrape sweep. Baserunner sliding into a base. */
+export function slide(when = 0): void {
+  const { ctx, master } = ensureAudio();
+  const t0 = ctx.currentTime + when + SCHEDULE_LEAD_SEC;
+
+  const noise = ctx.createBufferSource();
+  noise.buffer = makeNoise(ctx, 0.6);
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.Q.value = 1.6;
+  bp.frequency.setValueAtTime(1800, t0);
+  bp.frequency.exponentialRampToValueAtTime(450, t0 + 0.5);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(0.6, t0 + 0.04);
+  g.gain.setValueAtTime(0.6, t0 + 0.22);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.55);
+  noise.connect(bp).connect(g).connect(master);
+  noise.start(t0);
+  noise.stop(t0 + 0.6);
+
+  // Low rumble layer for body — the runner's weight on dirt.
+  const rumble = ctx.createBufferSource();
+  rumble.buffer = makeNoise(ctx, 0.5);
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 250;
+  const rg = ctx.createGain();
+  rg.gain.setValueAtTime(0.0001, t0);
+  rg.gain.exponentialRampToValueAtTime(0.35, t0 + 0.05);
+  rg.gain.setValueAtTime(0.35, t0 + 0.2);
+  rg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
+  rumble.connect(lp).connect(rg).connect(master);
+  rumble.start(t0);
+  rumble.stop(t0 + 0.5);
+}
+
+/** Strike 3 call: chiptune punch-out fanfare — three ascending square-wave notes. Pitch result is third strike. */
+export function strike3Call(when = 0): void {
+  const { ctx, master } = ensureAudio();
+  const t0 = ctx.currentTime + when + SCHEDULE_LEAD_SEC;
+
+  const notes: ReadonlyArray<{ freq: number; start: number; dur: number; peak: number }> = [
+    { freq: 392, start: 0, dur: 0.08, peak: 0.32 }, // G4
+    { freq: 523, start: 0.09, dur: 0.08, peak: 0.32 }, // C5
+    { freq: 659, start: 0.18, dur: 0.26, peak: 0.36 }, // E5 — held
+  ];
+  for (const n of notes) {
+    const osc = ctx.createOscillator();
+    osc.type = 'square';
+    osc.frequency.value = n.freq;
+    const g = ctx.createGain();
+    const ts = t0 + n.start;
+    g.gain.setValueAtTime(0.0001, ts);
+    g.gain.exponentialRampToValueAtTime(n.peak, ts + 0.008);
+    g.gain.setValueAtTime(n.peak, ts + n.dur * 0.7);
+    g.gain.exponentialRampToValueAtTime(0.0001, ts + n.dur);
+    osc.connect(g).connect(master);
+    osc.start(ts);
+    osc.stop(ts + n.dur + 0.02);
+  }
+}
+
+/** Bat snap: violent wood snap with a splintering tail. Rare frustration trigger after a strikeout. */
+export function batSnap(when = 0): void {
+  const { ctx, master } = ensureAudio();
+  const t0 = ctx.currentTime + when + SCHEDULE_LEAD_SEC;
+
+  // Sharp wood-snap transient: highpassed noise.
+  const snap = ctx.createBufferSource();
+  snap.buffer = makeNoise(ctx, 0.06);
+  const hp = ctx.createBiquadFilter();
+  hp.type = 'highpass';
+  hp.frequency.value = 1800;
+  const sg = ctx.createGain();
+  envADR(sg, t0, 1.1, 0.001, 0.008, 0.05);
+  snap.connect(hp).connect(sg).connect(master);
+  snap.start(t0);
+  snap.stop(t0 + 0.07);
+
+  // Low thud — bat striking ground / weight of the break.
+  const thud = ctx.createOscillator();
+  thud.type = 'sine';
+  thud.frequency.setValueAtTime(120, t0);
+  thud.frequency.exponentialRampToValueAtTime(50, t0 + 0.07);
+  const tg = ctx.createGain();
+  envADR(tg, t0, 0.7, 0.003, 0.012, 0.09);
+  thud.connect(tg).connect(master);
+  thud.start(t0);
+  thud.stop(t0 + 0.12);
+
+  // Sawtooth crack — the audible split.
+  const crack = ctx.createOscillator();
+  crack.type = 'sawtooth';
+  crack.frequency.setValueAtTime(420, t0);
+  crack.frequency.exponentialRampToValueAtTime(110, t0 + 0.06);
+  const cg = ctx.createGain();
+  envADR(cg, t0, 0.45, 0.002, 0.01, 0.08);
+  crack.connect(cg).connect(master);
+  crack.start(t0);
+  crack.stop(t0 + 0.1);
+
+  // Splintering tail: bandpassed noise that fades over ~250ms.
+  const tail = ctx.createBufferSource();
+  tail.buffer = makeNoise(ctx, 0.3);
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.Q.value = 2;
+  bp.frequency.setValueAtTime(2200, t0);
+  bp.frequency.exponentialRampToValueAtTime(900, t0 + 0.25);
+  const tlg = ctx.createGain();
+  tlg.gain.setValueAtTime(0.0001, t0 + 0.02);
+  tlg.gain.exponentialRampToValueAtTime(0.4, t0 + 0.04);
+  tlg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.27);
+  tail.connect(bp).connect(tlg).connect(master);
+  tail.start(t0);
+  tail.stop(t0 + 0.3);
+}
