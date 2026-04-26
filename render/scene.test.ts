@@ -119,4 +119,37 @@ describe('buildScene', () => {
     const scene = buildScene(events, scoreEvent.t + 0.5, ctx);
     expect(scene.scoreHome + scene.scoreAway).toBeGreaterThan(0);
   });
+
+  it('emits a +1 popup when a runner scores and ages it out', () => {
+    const { events, ctx } = buildContextAndEvents();
+    const scoreEvent = events.find((e) => e.kind === 'baserunner' && e.to === 0 && !e.out);
+    if (!scoreEvent || scoreEvent.kind !== 'baserunner') return;
+    // Just after scoring: at least one popup is alive.
+    const scene = buildScene(events, scoreEvent.t + 1, ctx);
+    expect(scene.recentRunsScored.length).toBeGreaterThan(0);
+    expect(scene.recentRunsScored[0]!.firedAtT).toBe(scoreEvent.t);
+    // Long after scoring (well past the popup lifetime): popup is gone
+    // unless another run has scored in the interim.
+    const sceneLate = buildScene(events, scoreEvent.t + 100, ctx);
+    const stillThatOne = sceneLate.recentRunsScored.some((r) => r.firedAtT === scoreEvent.t);
+    expect(stillThatOne).toBe(false);
+  });
+
+  it('stacks popups when multiple runners score on the same play', () => {
+    const { events, ctx } = buildContextAndEvents();
+    // Find a t with multiple to=0 baserunner events (e.g. multi-run hit).
+    const tCounts = new Map<number, number>();
+    for (const e of events) {
+      if (e.kind === 'baserunner' && e.to === 0 && !e.out) {
+        tCounts.set(e.t, (tCounts.get(e.t) ?? 0) + 1);
+      }
+    }
+    const multiT = [...tCounts.entries()].find(([, n]) => n >= 2)?.[0];
+    if (multiT === undefined) return; // no multi-run play in this seed; skip.
+    const scene = buildScene(events, multiT + 1, ctx);
+    const here = scene.recentRunsScored.filter((r) => r.firedAtT === multiT);
+    expect(here.length).toBeGreaterThanOrEqual(2);
+    // Stack indices are 0, 1, 2, ... in event order.
+    here.forEach((p, i) => expect(p.stackIndex).toBe(i));
+  });
 });
