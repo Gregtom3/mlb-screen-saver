@@ -53,10 +53,10 @@ const sprayDegOf = (bp: BallPath): number =>
   (Math.atan2(bp.landingX, Math.max(1, bp.landingY)) * 180) / Math.PI;
 
 const pickInfieldPosition = (spray: number): Position => {
-  if (spray < -18) return '3B';
-  if (spray < -6) return 'SS';
-  if (spray < 6) return 'P';
-  if (spray < 18) return '2B';
+  if (spray < -20) return '3B';
+  if (spray < -3) return 'SS';
+  if (spray < 3) return 'P';
+  if (spray < 20) return '2B';
   return '1B';
 };
 
@@ -84,12 +84,41 @@ const fielderPositionFor = (outcome: AtBatOutcome, bp: BallPath): Position | nul
   }
 };
 
+// "Who handled the ball?" for *every* batted ball, including hits — so we can
+// see the full distribution, not just outs. Outs use the sim's actual rule;
+// hits are attributed by spray + launch angle as the position the ball passed
+// (or was hit over). Walks/HBP/Ks have no fielder; HRs leave the park.
+const handlerPositionFor = (outcome: AtBatOutcome, bp: BallPath | null): Position | null => {
+  if (outcome === 'walk' || outcome === 'hit-by-pitch' || outcome === 'home-run') return null;
+  if (outcome === 'strikeout-looking' || outcome === 'strikeout-swinging') return null;
+  if (!bp) return null;
+  const spray = sprayDegOf(bp);
+  // Outs and reached-on-error: defer to the sim's existing rule.
+  const fielded = fielderPositionFor(outcome, bp);
+  if (fielded) return fielded;
+  if (outcome === 'reached-on-error') {
+    return bp.launchAngleDeg < 10 ? pickInfieldPosition(spray) : pickOutfieldPosition(spray);
+  }
+  // Hits: a grounder/low liner went past an infielder; a fly/liner lands among OF.
+  // Singles span both — chopper through the hole vs. bloop to short OF — so we
+  // split on launch angle the same way the sim splits lineouts.
+  if (outcome === 'single') {
+    return bp.launchAngleDeg < 10 ? pickInfieldPosition(spray) : pickOutfieldPosition(spray);
+  }
+  if (outcome === 'double' || outcome === 'triple') return pickOutfieldPosition(spray);
+  if (outcome === 'sac-bunt') return pickInfieldPosition(spray);
+  return null;
+};
+
 interface Tally {
   total: number;
   byOutcome: Map<AtBatOutcome, number>;
+  // Position involvement, fielded outs only (sim's official rule).
   byPosition: Map<Position, number>;
-  // outcome → position → count, for fielded plays only.
   matrix: Map<AtBatOutcome, Map<Position, number>>;
+  // Position involvement, *all* batted balls (hits + outs + reached-on-error).
+  byPositionAll: Map<Position, number>;
+  matrixAll: Map<AtBatOutcome, Map<Position, number>>;
   // Spray angle histogram for *every* batted ball, regardless of outcome.
   // Bin width = 4°, range [-44°, +44°].
   sprayHist: number[];
@@ -100,6 +129,8 @@ const newTally = (): Tally => ({
   byOutcome: new Map(),
   byPosition: new Map(),
   matrix: new Map(),
+  byPositionAll: new Map(),
+  matrixAll: new Map(),
   sprayHist: new Array(22).fill(0),
 });
 
@@ -128,16 +159,26 @@ const recordEvents = (events: readonly SimEvent[], tally: Tally, remaining: numb
       added += 1;
       bumpMap(tally.byOutcome, ev.outcome);
       if (lastContact) {
-        const pos = fielderPositionFor(ev.outcome, lastContact);
-        if (pos) {
-          bumpMap(tally.byPosition, pos);
+        const fieldedPos = fielderPositionFor(ev.outcome, lastContact);
+        if (fieldedPos) {
+          bumpMap(tally.byPosition, fieldedPos);
           let row = tally.matrix.get(ev.outcome);
           if (!row) {
             row = new Map();
             tally.matrix.set(ev.outcome, row);
           }
-          bumpMap(row, pos);
+          bumpMap(row, fieldedPos);
         }
+      }
+      const handlerPos = handlerPositionFor(ev.outcome, lastContact);
+      if (handlerPos) {
+        bumpMap(tally.byPositionAll, handlerPos);
+        let row = tally.matrixAll.get(ev.outcome);
+        if (!row) {
+          row = new Map();
+          tally.matrixAll.set(ev.outcome, row);
+        }
+        bumpMap(row, handlerPos);
       }
       lastContact = null; // contact belongs to one at-bat
     }
@@ -161,6 +202,21 @@ const FIELDED_OUTCOMES: AtBatOutcome[] = [
   'lineout',
   'flyout',
   'sac-fly',
+];
+
+const ALL_OUTCOMES: AtBatOutcome[] = [
+  'groundout',
+  'double-play',
+  'fielders-choice',
+  'popout',
+  'lineout',
+  'flyout',
+  'sac-fly',
+  'sac-bunt',
+  'reached-on-error',
+  'single',
+  'double',
+  'triple',
 ];
 
 const printReport = (tally: Tally): void => {
@@ -210,6 +266,49 @@ const printReport = (tally: Tally): void => {
   console.log(header);
   for (const oc of FIELDED_OUTCOMES) {
     const row = tally.matrix.get(oc);
+    if (!row) continue;
+    const rowTotal = Array.from(row.values()).reduce((s, n) => s + n, 0);
+    const cells = POSITIONS_ORDERED.map((p) => {
+      const c = row.get(p) ?? 0;
+      return pad(rowTotal === 0 ? '-' : `${((c / rowTotal) * 100).toFixed(1)}%`, 7);
+    }).join('');
+    console.log(`  ${padR(oc, 18)}${cells}${pad(rowTotal, 8)}`);
+  }
+  console.log('');
+
+  const allTotal = Array.from(tally.byPositionAll.values()).reduce((s, n) => s + n, 0);
+  console.log(`=== Position distribution across ALL batted balls (${allTotal.toLocaleString()} balls) ===`);
+  for (const pos of POSITIONS_ORDERED) {
+    const c = tally.byPositionAll.get(pos) ?? 0;
+    console.log(`  ${padR(pos, 4)} ${pad(c.toLocaleString(), 8)}  ${pct(c, allTotal)}`);
+  }
+  console.log('');
+
+  console.log('=== Outcome × Position matrix — ALL batted balls (counts) ===');
+  console.log(header);
+  for (const oc of ALL_OUTCOMES) {
+    const row = tally.matrixAll.get(oc);
+    if (!row) continue;
+    const cells = POSITIONS_ORDERED.map((p) => pad(row.get(p) ?? 0, 7)).join('');
+    const rowTotal = Array.from(row.values()).reduce((s, n) => s + n, 0);
+    console.log(`  ${padR(oc, 18)}${cells}${pad(rowTotal, 8)}`);
+  }
+  const colTotalsAll = POSITIONS_ORDERED.map((p) => {
+    let sum = 0;
+    for (const oc of ALL_OUTCOMES) sum += tally.matrixAll.get(oc)?.get(p) ?? 0;
+    return sum;
+  });
+  console.log(
+    `  ${padR('TOTAL', 18)}` +
+      colTotalsAll.map((n) => pad(n, 7)).join('') +
+      pad(colTotalsAll.reduce((s, n) => s + n, 0), 8),
+  );
+  console.log('');
+
+  console.log('=== Outcome × Position matrix — ALL batted balls (% of that outcome) ===');
+  console.log(header);
+  for (const oc of ALL_OUTCOMES) {
+    const row = tally.matrixAll.get(oc);
     if (!row) continue;
     const rowTotal = Array.from(row.values()).reduce((s, n) => s + n, 0);
     const cells = POSITIONS_ORDERED.map((p) => {
