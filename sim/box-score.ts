@@ -31,6 +31,13 @@ export interface PitcherLine {
   readonly walks: number;
   readonly strikeouts: number;
   readonly pitches: number;
+  // Pitch-result tallies. balls = pitches called outside the zone
+  // (PitchResult 'ball'). strikes = called/swinging strikes, fouls,
+  // foul-tip caught, and in-play. HBP is neither — it's a pitch but not
+  // credited as a ball or strike here, matching how MLB scoring reports
+  // the P-S line.
+  readonly balls: number;
+  readonly strikes: number;
   readonly homeRunsAllowed: number;
 }
 
@@ -70,7 +77,18 @@ const ensureBatter = (m: Map<PlayerId, BatterLine>, id: PlayerId): BatterLine =>
 const ensurePitcher = (m: Map<PlayerId, PitcherLine>, id: PlayerId): PitcherLine => {
   let row = m.get(id);
   if (!row) {
-    row = { playerId: id, outs: 0, hits: 0, runs: 0, walks: 0, strikeouts: 0, pitches: 0, homeRunsAllowed: 0 };
+    row = {
+      playerId: id,
+      outs: 0,
+      hits: 0,
+      runs: 0,
+      walks: 0,
+      strikeouts: 0,
+      pitches: 0,
+      balls: 0,
+      strikes: 0,
+      homeRunsAllowed: 0,
+    };
     m.set(id, row);
   }
   return row;
@@ -131,7 +149,20 @@ export const buildBoxScore = (events: readonly SimEvent[], input: GameInput): Bo
         currentPitcherId = ev.pitcherId;
         const pitcherMap = battingHome ? awayPitchers : homePitchers;
         const cur = ensurePitcher(pitcherMap, ev.pitcherId);
-        pitcherMap.set(ev.pitcherId, { ...cur, pitches: cur.pitches + 1 });
+        const result = ev.pitch.result;
+        const isBall = result === 'ball';
+        const isStrikeResult =
+          result === 'called-strike' ||
+          result === 'swinging-strike' ||
+          result === 'foul' ||
+          result === 'foul-tip-caught' ||
+          result === 'in-play';
+        pitcherMap.set(ev.pitcherId, {
+          ...cur,
+          pitches: cur.pitches + 1,
+          balls: cur.balls + (isBall ? 1 : 0),
+          strikes: cur.strikes + (isStrikeResult ? 1 : 0),
+        });
         break;
       }
 
