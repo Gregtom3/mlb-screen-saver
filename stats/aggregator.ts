@@ -253,6 +253,9 @@ export const aggregateGame = (
   let abRunsScored = 0;
   let abRunnerIds: PlayerId[] = []; // runners credited with R during this AB
   let abContact: { ballPath: { landingX: number; landingY: number; exitVeloMph: number; launchAngleDeg: number } } | null = null;
+  // The last pitch's zone in the current AB. Used at atBatEnd to credit
+  // the batter's zone-PA cell for xBA-by-zone aggregates.
+  let abLastZone: number | null = null;
 
   // WP timeline: append a sample on every state-mutating event.
   const wpTimeline: GameWPTimeline = {
@@ -356,8 +359,8 @@ export const aggregateGame = (
         currentBatterId = ev.batterId;
         battersSeen.add(currentBatterId);
         pitchersSeen.add(fieldingPitcher);
-        getOrCreateBatting(agg, currentBatterId, battingTeam);
-        getOrCreatePitching(agg, fieldingPitcher, fieldingTeam);
+        const bLineNow = getOrCreateBatting(agg, currentBatterId, battingTeam);
+        const pLineNow = getOrCreatePitching(agg, fieldingPitcher, fieldingTeam);
         ensureBattingRow(
           currentBatterId,
           battingTeam,
@@ -370,6 +373,18 @@ export const aggregateGame = (
           battingTeam,
           half === 'top', // pitching team is home in top of inning
         );
+        // Per-zone counters: pitcher's heat map cell + batter's zone PA cell.
+        // We attribute batter PA to the LAST pitch of the AB (decided at
+        // atBatEnd via abLastZone) — but the pitch-level "pitches seen"
+        // counter on the batter side captures every pitch, useful for
+        // the menu when callers want raw exposure.
+        const zone = ev.pitch.locationZone;
+        if (zone >= 0 && zone <= 9) {
+          pLineNow.pitchesByZone[zone] = (pLineNow.pitchesByZone[zone] ?? 0) + 1;
+          const cell = bLineNow.zone[zone];
+          if (cell) cell.pitches += 1;
+        }
+        abLastZone = zone;
         if (abStartState === null) {
           abStartState = captureStateForWP();
           abPitcherId = fieldingPitcher;
@@ -500,6 +515,20 @@ export const aggregateGame = (
         const monthLine = getOrCreateMonthSplit(bLine, monthKeyFor(day));
         foldAtBat(monthLine, eff, ev.rbis, 0);
 
+        // Per-zone batting line — attribute the AB to the location of the
+        // last pitch of the at-bat (the one that produced the outcome).
+        // Walks/HBP have no zone-AB credit but still count toward PA in the
+        // cell so menus can show "frequency this batter saw pitches here".
+        if (abLastZone !== null) {
+          const zoneCell = bLine.zone[abLastZone];
+          if (zoneCell) {
+            zoneCell.PA += 1;
+            if (eff.atBatCounts) zoneCell.AB += 1;
+            zoneCell.H += eff.hits;
+            zoneCell.HR += eff.homeRuns;
+          }
+        }
+
         // Spray chart — only contact outcomes have a ballPath.
         if (abContact) {
           const isHit =
@@ -571,6 +600,7 @@ export const aggregateGame = (
         abRunsScored = 0;
         abRunnerIds = [];
         abContact = null;
+        abLastZone = null;
         currentBatterId = null;
         break;
       }

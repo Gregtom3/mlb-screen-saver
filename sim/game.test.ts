@@ -106,6 +106,58 @@ describe('runGame sanity', () => {
   });
 });
 
+describe('pitcher zone tendencies', () => {
+  it('every in-zone pitch lands in 1..9, every out-of-zone pitch is 0', () => {
+    const input = buildInputForFirstGame(0xba_5e_ba_11, 7);
+    const events = runGame(input);
+    let inZone = 0;
+    let outZone = 0;
+    for (const ev of events) {
+      if (ev.kind !== 'pitch') continue;
+      const z = ev.pitch.locationZone;
+      expect(z).toBeGreaterThanOrEqual(0);
+      expect(z).toBeLessThanOrEqual(9);
+      if (z === 0) outZone += 1;
+      else inZone += 1;
+    }
+    // Sanity floor: a real game has many of each.
+    expect(inZone).toBeGreaterThan(20);
+    expect(outZone).toBeGreaterThan(20);
+  });
+
+  it('the same pitcher fingerprint produces a recognizable in-zone bias', () => {
+    // Run 30 games with the same seed; aggregate zone counts for one pitcher
+    // and verify their hottest cell sits at least 50% above their coldest
+    // cell — the pure-uniform fallback would converge to roughly equal.
+    const counts = new Map<string, number[]>();
+    for (let s = 1; s <= 30; s++) {
+      const events = runGame(buildInputForFirstGame(0xba_5e_ba_11, s));
+      for (const ev of events) {
+        if (ev.kind !== 'pitch') continue;
+        const z = ev.pitch.locationZone;
+        if (z < 1 || z > 9) continue;
+        const arr = counts.get(ev.pitcherId) ?? new Array(10).fill(0);
+        arr[z] += 1;
+        counts.set(ev.pitcherId, arr);
+      }
+    }
+    let qualifiedPitchers = 0;
+    let withBias = 0;
+    for (const arr of counts.values()) {
+      const total = arr.slice(1, 10).reduce((s, x) => s + x, 0);
+      if (total < 60) continue; // need enough pitches to read a fingerprint
+      qualifiedPitchers += 1;
+      const max = Math.max(...arr.slice(1, 10));
+      const min = Math.min(...arr.slice(1, 10).filter((v) => v > 0));
+      if (max >= min * 1.5) withBias += 1;
+    }
+    expect(qualifiedPitchers).toBeGreaterThan(0);
+    // Most pitchers with enough sample size should show a clear hot/cold
+    // skew — uniform sampling would not.
+    expect(withBias / qualifiedPitchers).toBeGreaterThan(0.6);
+  });
+});
+
 describe('fielder errors', () => {
   it('produces reached-on-error outcomes across a 30-game batch', () => {
     let totalErrors = 0;

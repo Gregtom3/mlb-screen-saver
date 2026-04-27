@@ -1,12 +1,15 @@
 import type {
+  BatterZonePrefs,
   Player,
   PlayerRatings,
   PersonalityFlag,
+  PitcherTendencies,
   Position,
   Bats,
   Throws,
   Team,
   TeamId,
+  ZoneTuple,
 } from '../world/types.js';
 import type { PRNG } from '../sim/prng.js';
 import { FIRST_NAMES, LAST_NAMES, HOMETOWNS } from './names.js';
@@ -194,6 +197,145 @@ const generateBirthYear = (rng: PRNG, inMinors: boolean): number => {
   return FOUNDING_YEAR - Math.max(18, Math.min(40, age));
 };
 
+// Listed heights cluster around the MLB mean (~6'1") with a tighter spread.
+// Pitchers and 1B/DH skew slightly taller; middle infielders and CF skew
+// shorter — a small extra knob beyond the bell-curve so the on-field sprite
+// mix has visible variety.
+const HEIGHT_BIAS: Partial<Record<Position, number>> = {
+  P: +0.15,
+  '1B': +0.1,
+  DH: +0.05,
+  '2B': -0.1,
+  SS: -0.1,
+  CF: -0.05,
+};
+
+const generateHeightFt = (rng: PRNG, position: Position): number => {
+  // Bell-curve mean 6.05 ft, total spread ~10 inches. Clamped to a credible
+  // band so no one looks cartoonish.
+  const avg = (rng.next() + rng.next() + rng.next()) / 3;
+  const centered = avg - 0.5; // -0.5..0.5
+  const raw = 6.05 + centered * 0.85 + (HEIGHT_BIAS[position] ?? 0);
+  return Math.max(5.55, Math.min(6.6, Math.round(raw * 100) / 100));
+};
+
+// Procedural zone-fingerprint generators. Both produce a 10-tuple indexed
+// by ZoneIndex (0..9). Index 0 = outside the zone; 1..9 = the 3×3 grid. The
+// distributions are intentionally idiosyncratic — each pitcher should have a
+// recognizable "outer-edge guy" or "high heat" signature, and each batter
+// should have a clearly preferred quadrant once enough PAs have accumulated.
+
+const zoneTuple = (vs: readonly number[]): ZoneTuple => {
+  if (vs.length !== 10) throw new Error('zoneTuple needs 10 values');
+  return [vs[0]!, vs[1]!, vs[2]!, vs[3]!, vs[4]!, vs[5]!, vs[6]!, vs[7]!, vs[8]!, vs[9]!] as ZoneTuple;
+};
+
+const generatePitcherTendencies = (
+  rng: PRNG,
+  ratings: PlayerRatings,
+): PitcherTendencies => {
+  // Pick an archetype hot zone — the corner / edge a pitcher lives at — and
+  // build a soft Gaussian blob over the 3×3 grid centered there. Command +
+  // groundballTendency tilt the blob low; high-velocity arms climb up in
+  // the zone.
+  const archetypeRoll = rng.next();
+  // Each archetype is a (col, row) center, both in [0..2] grid coords.
+  // 0,0 = top-left (zone 1); 2,2 = bottom-right (zone 9).
+  let cx: number;
+  let cy: number;
+  if (archetypeRoll < 0.18) {
+    // High-and-tight (RHP-style up-in)
+    cx = 0.4 + rng.next() * 0.6;
+    cy = 0.0 + rng.next() * 0.5;
+  } else if (archetypeRoll < 0.36) {
+    // Down-and-away
+    cx = 1.6 + rng.next() * 0.4;
+    cy = 1.6 + rng.next() * 0.4;
+  } else if (archetypeRoll < 0.5) {
+    // Low sinker-ball — stays at the knees
+    cx = 0.6 + rng.next() * 0.8;
+    cy = 1.7 + rng.next() * 0.3;
+  } else if (archetypeRoll < 0.62) {
+    // High four-seam, top of zone
+    cx = 0.5 + rng.next() * 1.0;
+    cy = 0.0 + rng.next() * 0.4;
+  } else {
+    // Generic "middle but a little off-center" — most pitchers
+    cx = 0.6 + rng.next() * 0.8;
+    cy = 0.6 + rng.next() * 0.8;
+  }
+  // Velocity nudges high; gb-tendency nudges low.
+  cy += (ratings.groundballTendency - 50) * 0.008 - (ratings.velocity - 50) * 0.005;
+  cy = Math.max(0, Math.min(2, cy));
+
+  const sigma = 0.7 + rng.next() * 0.4; // larger = more spread, less peaky
+  const weights: number[] = [];
+  // Index 0 (outside) — set high enough to model raw out-of-zone rate. Pitchers
+  // with low control miss the zone more often; the sim multiplies this against
+  // the in-zone bucket for the actual ball/strike split, so the absolute
+  // value here is just a starting bias.
+  weights.push(0); // placeholder; we don't use [0] for in-zone targeting
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      const dx = c - cx;
+      const dy = r - cy;
+      const w = Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma));
+      // Add a small per-zone jitter so the heat map doesn't look perfectly
+      // round.
+      weights.push(w * (0.85 + rng.next() * 0.3));
+    }
+  }
+  return { zoneWeights: zoneTuple(weights) };
+};
+
+const generateBatterZonePrefs = (
+  rng: PRNG,
+  ratings: PlayerRatings,
+  bats: Bats,
+): BatterZonePrefs => {
+  // Pick a hot quadrant — the area where the hitter's bat path lives. Power
+  // hitters love the inner half; contact hitters prefer middle-away. Lefty
+  // and righty swings mirror each other (handle-side vs barrel-side), so
+  // we flip the column for L bats. Switch hitters get a more balanced grid.
+  const isContactGuy = ratings.contact > ratings.power;
+  const sweetCx = isContactGuy
+    ? 0.4 + rng.next() * 1.2 // anywhere middle/away for contact types
+    : (rng.next() < 0.55 ? 0.0 + rng.next() * 0.9 : 1.2 + rng.next() * 0.8);
+  const sweetCy = 0.6 + rng.next() * 0.9; // middle of the zone, slight low bias
+  const cx = bats === 'L' ? 2 - sweetCx : sweetCx;
+  const cy = sweetCy;
+
+  // Switch hitters have a flatter prefs grid (they see fewer same-hand
+  // matchups, and we approximate that as "no glaring weak zone").
+  const sigma = bats === 'S' ? 1.4 : 0.95 + rng.next() * 0.4;
+
+  // Average xBA scale. A great hitter (high contact + power) bumps the
+  // baseline; a poor hitter dips it. The sim normalizes per-pitch effects
+  // by dividing through the league-mean later, so this scale is mostly
+  // about the *shape* across zones.
+  const skill = (ratings.contact + ratings.power) / 2 - 50;
+  const baseScale = 1.0 + skill * 0.0035;
+
+  const xs: number[] = [];
+  // Index 0 (outside the zone): chase rate context. Set near 1 so out-of-zone
+  // contact has a "neutral" expected-BA effect — discipline-driven swings
+  // tend to be defensive and average.
+  xs.push(0.95);
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      const dx = c - cx;
+      const dy = r - cy;
+      const blob = Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma));
+      // Map the blob to xBA in roughly [0.7, 1.3] around baseScale.
+      const peak = 1.32;
+      const trough = 0.72;
+      const v = trough + blob * (peak - trough);
+      xs.push(baseScale * v * (0.96 + rng.next() * 0.08));
+    }
+  }
+  return { xBA: zoneTuple(xs) };
+};
+
 const SECONDARY_BY_PRIMARY: Record<Position, readonly Position[]> = {
   P: [],
   C: ['1B'],
@@ -229,6 +371,8 @@ export const generateRoster = (rng: PRNG, team: Team): RosterGenerationResult =>
     const lastName = rng.pick(LAST_NAMES);
     const hometown = rng.pick(HOMETOWNS);
     const birthYear = generateBirthYear(rng, slot.inMinors);
+    const heightFt = generateHeightFt(rng, slot.position);
+    const isPitcher = slot.position === 'P';
     const player: Player = {
       id: `${team.id}-${String(index).padStart(2, '0')}`,
       firstName,
@@ -243,6 +387,11 @@ export const generateRoster = (rng: PRNG, team: Team): RosterGenerationResult =>
       personality,
       teamId: team.id,
       inMinors: slot.inMinors,
+      heightFt,
+      ...(isPitcher
+        ? { pitcherTendencies: generatePitcherTendencies(rng, ratings) }
+        : {}),
+      batterZonePrefs: generateBatterZonePrefs(rng, ratings, bats),
     };
     players.push(player);
   });

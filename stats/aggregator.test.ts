@@ -133,12 +133,12 @@ describe('buildSeasonAggregates', () => {
 
 describe('qualifiers', () => {
   it('scales hitter qualifier with team games played', () => {
-    const line = { PA: 10, AB: 8, R: 0, H: 0, doubles: 0, triples: 0, HR: 0, RBI: 0, BB: 0, HBP: 0, SO: 0, SF: 0, SH: 0, GIDP: 0, WPA: 0, G: 4, playerId: 'x', teamId: 'y', splits: {}, hitChart: [], gameLog: [], byMonth: {} };
+    const line = { PA: 10, AB: 8, R: 0, H: 0, doubles: 0, triples: 0, HR: 0, RBI: 0, BB: 0, HBP: 0, SO: 0, SF: 0, SH: 0, GIDP: 0, WPA: 0, G: 4, playerId: 'x', teamId: 'y', splits: {}, hitChart: [], gameLog: [], byMonth: {}, zone: [] };
     expect(isQualifiedBatter(line, 3)).toBe(true);  // need ≥ 9.3 PA
     expect(isQualifiedBatter(line, 5)).toBe(false); // need ≥ 15.5 PA
   });
   it('scales pitcher qualifier with team games played', () => {
-    const line = { IPouts: 9, H: 0, R: 0, ER: 0, HR: 0, BB: 0, HBP: 0, SO: 0, BF: 0, WPA: 0, G: 1, GS: 1, W: 0, L: 0, SV: 0, playerId: 'x', teamId: 'y', splits: {}, gameLog: [] };
+    const line = { IPouts: 9, H: 0, R: 0, ER: 0, HR: 0, BB: 0, HBP: 0, SO: 0, BF: 0, WPA: 0, G: 1, GS: 1, W: 0, L: 0, SV: 0, playerId: 'x', teamId: 'y', splits: {}, gameLog: [], pitchesByZone: [] };
     expect(isQualifiedPitcher(line, 3)).toBe(true); // need ≥ 9 outs
     expect(isQualifiedPitcher(line, 4)).toBe(false); // need ≥ 12 outs
   });

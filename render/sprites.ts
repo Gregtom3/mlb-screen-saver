@@ -111,7 +111,8 @@ const drawPlayer = (
   simTime: number,
 ): void => {
   const s = worldToScreen(p.position, t);
-  const pixelSize = Math.max(1.5, t.pixelsPerFoot * SCALE_PX_PER_FT);
+  const heightScale = p.heightScale ?? 1;
+  const pixelSize = Math.max(1.5, t.pixelsPerFoot * SCALE_PX_PER_FT * heightScale);
   // Vertical bob, ~0.6 px peak for a 12-px sprite.
   const bobY = Math.sin(simTime * 0.55 + phaseHash(p.id)) * pixelSize * 0.4;
   const cy = s.y + bobY;

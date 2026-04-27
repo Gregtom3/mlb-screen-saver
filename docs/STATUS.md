@@ -3,7 +3,7 @@
 A current-state map so a fresh session doesn't have to re-survey the repo.
 Update this file whenever you finish a chunk. Keep it short.
 
-Last reviewed: 2026-04-27 (after PHASE_6 history merge).
+Last reviewed: 2026-04-27 (after strike-zone viewer + per-player zone IDs).
 
 ## Phase status
 
@@ -22,22 +22,22 @@ Last reviewed: 2026-04-27 (after PHASE_6 history merge).
 
 | Path | What it owns | State |
 |------|--------------|-------|
-| `/sim` | Pure sim engine, event log, box score, stadium-effect plugins | Solid. Errors wired (glove rating → reached-on-error). Missing: WPs, pickoffs, SB, fatigue, advanced baserunning. |
-| `/world` | League snapshot, persistent state types | Static across seasons (no aging). |
-| `/render` | Canvas renderer, scene reducer, sprites, HUD | Phase 2/3 complete. No day/night or weather. |
-| `/ui` | Five DOM menus (live/league/team/player/history), nav stack, sortable tables | Complete. No nudge controls. |
+| `/sim` | Pure sim engine, event log, box score, stadium-effect plugins | Solid. Errors wired (glove rating → reached-on-error). Pitcher heat-map zone targeting + batter zone-pref outcome shifts wired. Missing: WPs, pickoffs, SB, fatigue, advanced baserunning. |
+| `/world` | League snapshot, persistent state types | Players carry `heightFt`, per-pitcher zone tendencies, per-batter zone xBA prefs. Static across seasons (no aging). |
+| `/render` | Canvas renderer, scene reducer, sprites, HUD | Phase 2/3 complete + 8-bit strike-zone viewer in HUD + per-player sprite-size variance from listed height. No day/night or weather. |
+| `/ui` | Five DOM menus (live/league/team/player/history), nav stack, sortable tables | Complete + pitcher heat map + batter xBA-by-zone in player view (sample-gated). No nudge controls. |
 | `/audio` | SFX dispatcher wired to SimEvents, audition page | ~5 SFX. No ambient crowd loop, no chiptune. |
 | `/persist` | SaveAdapter interface | **In-memory only.** No IndexedDB yet. |
 | `/season` | Schedule, history rollups, lineups | Schedule + history ✅. Playoffs are schema only — no games run. Offseason orchestration ❌. |
 | `/director` | User manager nudges → sim input | **One-line placeholder.** |
 | `/app` | Glue, lifecycle, CLI, PBP printers | Complete for current scope. |
-| `/content` | Curated teams, names, stadiums | Complete. |
-| `/stats` | Aggregator, derived, splits, WPA, hot/cold, awards | New (Phase 5.5). Solid, well-tested. |
+| `/content` | Curated teams, names, stadiums | Complete. Per-player heights + zone fingerprints generated at league init. |
+| `/stats` | Aggregator, derived, splits, WPA, hot/cold, awards | Phase 5.5 + per-pitcher `pitchesByZone` + per-batter zone PA/AB/H/HR cells. |
 | `/projections` | Pythagorean + log5 + Monte Carlo standings | New (Phase 5.5). Not in original brief. |
 
 ## Tech stack
 
-TypeScript 5.7 + Vite 6 + Canvas2D. Vitest 2.1 (63 tests). ESLint 9 flat config
+TypeScript 5.7 + Vite 6 + Canvas2D. Vitest 2.1 (77 tests). ESLint 9 flat config
 with `eslint-plugin-import-x` enforcing the `/sim` boundary. Prettier 3.4.
 **Zero runtime dependencies.** Bundle ~145 KB / ~47 KB gzipped.
 

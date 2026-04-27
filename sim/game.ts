@@ -96,6 +96,24 @@ interface PitchOutcome {
   readonly locationZone: number;
 }
 
+// Sample one of the nine in-zone locations weighted by the pitcher's
+// tendency fingerprint. Pitchers without explicit tendencies fall back to a
+// uniform draw — preserves prior behavior for any future emergency-pitcher
+// case that lacks a generated heat map.
+const pickInZoneLocation = (pitcher: Player, rng: PRNG): number => {
+  const tend = pitcher.pitcherTendencies;
+  if (!tend) return 1 + Math.floor(rng.next() * 9);
+  let total = 0;
+  for (let z = 1; z <= 9; z++) total += tend.zoneWeights[z]!;
+  if (total <= 0) return 1 + Math.floor(rng.next() * 9);
+  let r = rng.next() * total;
+  for (let z = 1; z <= 9; z++) {
+    r -= tend.zoneWeights[z]!;
+    if (r <= 0) return z;
+  }
+  return 9;
+};
+
 const pitchTypeFor = (pitcher: Player, rng: PRNG): PitchType => {
   // Pitchers with strong breaking-ball / changeup ratings lean off-speed.
   // Velocity-heavy arms lean fastball.
@@ -135,7 +153,7 @@ const simulatePitch = (
   // edges, so stamina pulls down once it's deep in the count.
   const zoneProb = 0.42 + (pitcher.ratings.control - 50) * 0.004;
   const inZone = rng.next() < zoneProb;
-  const locationZone = inZone ? 1 + Math.floor(rng.next() * 9) : 0; // 0 = outside
+  const locationZone = inZone ? pickInZoneLocation(pitcher, rng) : 0; // 0 = outside
 
   // Hitter aggression depends on count, discipline, and pitch type.
   // pitchRecognition reduces chase rate specifically on breaking / off-speed.
@@ -353,6 +371,17 @@ const fielderPositionFor = (outcome: AtBatOutcome, ballPath: BallPath): Position
 const errorProbForGlove = (glove: number): number =>
   clamp(0.022 - (glove - 50) * 0.0006, 0.003, 0.06);
 
+// Multiplier applied to in-play hit-quality from a batter's xBA grid at the
+// pitch's location. Center it around the league mean (~1.0 by construction)
+// so most pitches barely move the needle, but a pitch into a hitter's true
+// hot zone (xBA ~ 1.3) raises HR/2B odds noticeably while a weakness zone
+// (xBA ~ 0.7) suppresses them.
+const xBAMultFor = (batter: Player, locationZone: number): number => {
+  const z = batter.batterZonePrefs.xBA[locationZone];
+  if (z === undefined) return 1;
+  return z;
+};
+
 const simulateInPlay = (
   batter: Player,
   pitcher: Player,
@@ -361,6 +390,7 @@ const simulateInPlay = (
   rng: PRNG,
   quirk: StadiumQuirk | undefined,
   highLeverage: boolean,
+  locationZone: number,
 ): InPlayResult => {
   // Outcome roll from a rating-modulated probability table, then multiplied
   // by stadium-quirk adjustments (Phase 4 plugin). Quirks shift odds; they
@@ -389,18 +419,30 @@ const simulateInPlay = (
   const stuff = (pitcher.ratings.velocity - 50) * 0.5;
 
   const adj: QuirkAdjustments = adjustmentsFor(quirk);
+  // Batter zone preference at the pitch location. The scalar tilts the
+  // hit-rate band, so a pitch served up in a hitter's hot zone produces
+  // more barrels and a pitch jammed at a weak spot produces more weak
+  // contact. The shift on each rate is intentionally modest — the zone
+  // grid is one input among many, not a dominator.
+  const xBAMult = xBAMultFor(batter, locationZone);
+  const xBABoost = (xBAMult - 1) * 0.6; // -0.18..+0.18 from typical xBA span
   const hrRate = Math.max(
     0.005,
     (0.04 + power * 0.0018 - cmd * 0.0008 - gb * 0.0006 - stuff * 0.0004 + leverageNet) *
-      adj.hrRateMul,
+      adj.hrRateMul *
+      (1 + xBABoost),
   );
   const dblRate = Math.max(
     0.02,
     (0.07 + power * 0.0009 + contact * 0.0004 - stuff * 0.0002 + leverageNet * 0.5) *
-      adj.doubleRateMul,
+      adj.doubleRateMul *
+      (1 + xBABoost * 0.7),
   );
   const tplRate = Math.max(0.001, (0.005 + speed * 0.0003) * adj.tripleRateMul);
-  const sglRate = Math.max(0.05, 0.2 + contact * 0.0011 - stuff * 0.0003 + leverageNet * 0.5);
+  const sglRate = Math.max(
+    0.05,
+    (0.2 + contact * 0.0011 - stuff * 0.0003 + leverageNet * 0.5) * (1 + xBABoost * 0.5),
+  );
 
   const r = rng.next();
   let outcome: AtBatOutcome;
@@ -727,6 +769,7 @@ const simulateAtBat = (
           rng,
           stadiumQuirk,
           highLeverage,
+          po.locationZone,
         );
         outcome = inPlayResult.outcome;
         state.events.push({

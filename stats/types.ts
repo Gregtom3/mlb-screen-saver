@@ -19,6 +19,18 @@ export type BattingSplitKey =
 
 export type PitchingSplitKey = 'vsLHB' | 'vsRHB' | 'home' | 'away' | 'lateAndClose';
 
+// Per-zone batting result counters. Index 0 = pitches outside the strike
+// zone (chase-bucket). 1..9 = the 3×3 zone grid. Captured at pitch time so
+// the menu can show xBA-by-zone once a hitter has accumulated enough
+// plate-appearances in that location to be readable.
+export interface ZoneBattingCell {
+  pitches: number; // total pitches seen in this zone, regardless of outcome
+  PA: number; // ABs that ended on a pitch in this zone (last-pitch attribution)
+  AB: number;
+  H: number;
+  HR: number;
+}
+
 export interface BattingLine {
   readonly playerId: PlayerId;
   readonly teamId: TeamId;
@@ -48,6 +60,9 @@ export interface BattingLine {
   gameLog: BattingGameLogEntry[];
   // Per-month accumulator for the by-month split row.
   byMonth: Record<string, BattingLine>;
+  // Zone batting line — index 0..9. Built incrementally from pitch +
+  // atBatEnd events.
+  zone: ZoneBattingCell[];
 }
 
 export interface PitchingLine {
@@ -73,6 +88,10 @@ export interface PitchingLine {
   WPA: number;
   splits: Partial<Record<PitchingSplitKey, PitchingLine>>;
   gameLog: PitchingGameLogEntry[];
+  // Pitches thrown in each zone. Index 0 = outside the zone, 1..9 = the
+  // 3×3 grid. Drives the in-menu heat map. The total pitch count is the
+  // sum across all 10 cells.
+  pitchesByZone: number[];
 }
 
 export interface TeamLine {
@@ -168,6 +187,12 @@ export interface SeasonAggregates {
 
 // ---- factories ----
 
+const emptyZoneCells = (): ZoneBattingCell[] => {
+  const cells: ZoneBattingCell[] = [];
+  for (let i = 0; i < 10; i++) cells.push({ pitches: 0, PA: 0, AB: 0, H: 0, HR: 0 });
+  return cells;
+};
+
 export const emptyBattingLine = (playerId: PlayerId, teamId: TeamId): BattingLine => ({
   playerId, teamId,
   G: 0, PA: 0, AB: 0, R: 0, H: 0,
@@ -178,6 +203,7 @@ export const emptyBattingLine = (playerId: PlayerId, teamId: TeamId): BattingLin
   hitChart: [],
   gameLog: [],
   byMonth: {},
+  zone: emptyZoneCells(),
 });
 
 export const emptyPitchingLine = (playerId: PlayerId, teamId: TeamId): PitchingLine => ({
@@ -188,6 +214,7 @@ export const emptyPitchingLine = (playerId: PlayerId, teamId: TeamId): PitchingL
   WPA: 0,
   splits: {},
   gameLog: [],
+  pitchesByZone: new Array(10).fill(0),
 });
 
 export const emptyTeamLine = (teamId: TeamId): TeamLine => ({

@@ -59,6 +59,41 @@ export interface PlayerRatings {
 // (clutch, streaky, durable, injury-prone) graduated to scalar ratings.
 export type PersonalityFlag = 'hot-headed' | 'glove-first';
 
+// Strike-zone grid. The sim emits `locationZone` on every pitch; downstream
+// code shares this convention so the renderer, stats aggregator, and HUD
+// agree on layout:
+//
+//   1 | 2 | 3       top row  (high)
+//  ---+---+---
+//   4 | 5 | 6       middle row
+//  ---+---+---
+//   7 | 8 | 9       bottom row (low)
+//
+// `0` = outside the strike zone (a ball location, never a called strike).
+// Tuples below are length-10, indexed 0..9, so `[5]` is the middle of the
+// zone and `[0]` is the catch-all "off the plate" bucket.
+export type ZoneIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+export type ZoneTuple = readonly [number, number, number, number, number, number, number, number, number, number];
+
+// Per-pitcher zone-targeting tendencies. Each weight is unnormalized; the sim
+// turns them into a distribution at sample time. Index 0 (outside) governs
+// raw "miss the zone" rate alongside the pitcher's `control` rating, but it
+// is the in-zone tilt (1..9) that produces a recognizable heat-map fingerprint
+// over a season. Stable per player — generated once at player creation,
+// never mutated.
+export interface PitcherTendencies {
+  readonly zoneWeights: ZoneTuple;
+}
+
+// Per-batter zone preferences. Multipliers applied to in-play hit-quality
+// when a pitch ended up in that zone — values >1 mean "this batter feasts
+// on pitches here", <1 means "weakness". The `xBA` field is the dimensionless
+// quality multiplier; the sim converts it to slight shifts in HR / 2B / 1B
+// rates. Stable per player — like tendencies, generated at creation.
+export interface BatterZonePrefs {
+  readonly xBA: ZoneTuple;
+}
+
 export type Position =
   | 'P'
   | 'C'
@@ -88,6 +123,17 @@ export interface Player {
   readonly personality: readonly PersonalityFlag[];
   readonly teamId: TeamId | null; // null = free agent / retired
   readonly inMinors: boolean;
+  // Listed height in feet. Drives strike-zone height (taller batters get a
+  // taller zone, shorter batters get a smaller one) and slight sprite-scale
+  // variance so individual players read as different sizes on the field.
+  readonly heightFt: number;
+  // Pitchers — zone-targeting fingerprint. Optional because position players
+  // never pitch in this league; emergency-pitcher cases would carry a
+  // generic/flat distribution.
+  readonly pitcherTendencies?: PitcherTendencies;
+  // All batters get a zone preference grid. Pitchers carry one too (they bat
+  // when DH is not in use, and the field stays uniform across players).
+  readonly batterZonePrefs: BatterZonePrefs;
 }
 
 export type Conference = 'West' | 'East';

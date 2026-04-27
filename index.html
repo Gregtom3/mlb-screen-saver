@@ -522,6 +522,45 @@
       .spray-canvas {
         max-width: 400px;
       }
+      .heat-map-canvas {
+        display: block;
+        max-width: 220px;
+        image-rendering: pixelated;
+        margin-top: 6px;
+        border: 1px solid #1d2128;
+      }
+      .zone-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 60px);
+        grid-template-rows: repeat(3, 50px);
+        gap: 2px;
+        margin-top: 6px;
+        background: #1d2128;
+        padding: 2px;
+        width: max-content;
+      }
+      .zone-cell {
+        background: rgba(40, 50, 65, 0.5);
+        color: #e6e6e6;
+        font-family: inherit;
+        text-align: center;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        font-size: 11px;
+      }
+      .zone-cell-avg {
+        font-size: 14px;
+        font-weight: bold;
+      }
+      .zone-cell-avg.dim {
+        color: #7d848d;
+      }
+      .zone-cell-ab {
+        color: #7d848d;
+        font-size: 10px;
+      }
 
       /* ----- Live view ----- */
       .live-grid {

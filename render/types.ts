@@ -1,4 +1,5 @@
 import type { PlayerId, StadiumId, TeamId } from '../world/types.js';
+import type { PitchResult } from '../sim/types.js';
 
 // HUD-only aggregates derived from the event log. Computed by the scene
 // reducer once per frame from the same SimEvent stream that drives the
@@ -79,6 +80,30 @@ export interface ScenePlayer {
   // Hand-raise gesture, 0..1. Drives the "high-five" arm during the
   // post-game victory line and any other cheer scenes.
   readonly cheerFrac?: number;
+  // Per-player size multiplier derived from listed height. ~0.92 for the
+  // shortest players, ~1.08 for the tallest. The sprite renderer applies
+  // this on top of the shared SCALE_PX_PER_FT so the field shows visible
+  // size variety without distorting hit boxes much.
+  readonly heightScale?: number;
+}
+
+// One pitch's worth of data for the on-field strike-zone viewer. The
+// reducer captures the most recent pitches in the current at-bat so the
+// HUD can plot them as colored dots inside (or outside) the 3×3 strike-zone
+// grid. firedAtT lets the renderer fade older pitches.
+export interface StrikeZonePitchMark {
+  readonly result: PitchResult;
+  readonly locationZone: number; // 0 = outside, 1..9 = grid cell
+  readonly firedAtT: number;
+}
+
+// Strike zone viewer state. The viewer always renders, but the dot list
+// is only meaningful once at least one pitch has been thrown to the
+// current batter. `batterHeightFt` drives a tiny per-batter zone-height
+// variance so a 5'6" hitter and a 6'5" hitter visibly differ.
+export interface StrikeZoneViewerInfo {
+  readonly batterHeightFt: number;
+  readonly pitches: readonly StrikeZonePitchMark[];
 }
 
 // Set during the inning gap so the renderer can swap from "live action"
@@ -149,6 +174,7 @@ export interface SceneState {
   readonly batterStats: BatterCardStats | null;
   readonly pitcherStats: PitcherCardStats | null;
   readonly onDeckBatterId: PlayerId | null;
+  readonly strikeZone: StrikeZoneViewerInfo | null;
   readonly lineScore: SceneLineScore;
   readonly lastBigPlay: BigPlayInfo | null;
   // Active "+1" run-scored popups. Filtered to entries within the popup

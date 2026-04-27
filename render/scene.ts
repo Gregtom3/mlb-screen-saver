@@ -17,6 +17,8 @@ import type {
   SceneLineScore,
   ScenePlayer,
   SceneState,
+  StrikeZonePitchMark,
+  StrikeZoneViewerInfo,
   VictoryCelebration,
 } from './types.js';
 import { buildBoxScore } from '../sim/box-score.js';
@@ -264,6 +266,9 @@ export const buildScene = (
   let lastContactT: number | null = null; // for choreo lookup
   let lastBigPlay: BigPlayInfo | null = null;
   const runsScoredPopups: RunScoredPopup[] = [];
+  // Pitches in the current at-bat, oldest first. Cleared at every atBatEnd
+  // so the strike-zone viewer always reads as "this batter's pitch sequence".
+  let currentAbPitches: StrikeZonePitchMark[] = [];
 
   // Most recent inningEnd event, captured at the moment we apply it, plus
   // the fielding side that was on the field BEFORE the half flipped. The
@@ -309,6 +314,11 @@ export const buildScene = (
           r === 'foul-tip-caught' ||
           r === 'in-play';
         lastPitch = { t: ev.t, outcomeKnown: r === 'in-play', wasSwing };
+        currentAbPitches.push({
+          result: r,
+          locationZone: ev.pitch.locationZone,
+          firedAtT: ev.t,
+        });
         break;
       }
       case 'contact': {
@@ -361,6 +371,8 @@ export const buildScene = (
         outs += outsAddedFor(ev.outcome);
         balls = 0;
         strikes = 0;
+        // Clear the strike-zone trail so the next batter starts fresh.
+        currentAbPitches = [];
         // Set "big play" popup trigger for on-field fanfare + screen flash.
         const big = bigPlayFor(ev.outcome);
         if (big) {
@@ -391,6 +403,7 @@ export const buildScene = (
         outs = 0;
         balls = 0;
         strikes = 0;
+        currentAbPitches = [];
         // Capture the side that was just fielding so the walk-on phase can
         // still draw them retreating to their dugout while the new fielders
         // jog out.
@@ -494,6 +507,10 @@ export const buildScene = (
   // Build fielders.
   const fieldingLineupIds =
     half === 'top' ? ctx.input.home.battingOrder : ctx.input.away.battingOrder;
+  const heightScaleFor = (id: PlayerId): number => {
+    const p = ctx.input.playerIndex.get(id);
+    return p ? scaleFromHeight(p.heightFt) : 1;
+  };
   const fielders: ScenePlayer[] = [];
   if (pitcher) {
     fielders.push({
@@ -502,6 +519,7 @@ export const buildScene = (
       position: fielderPosFor(pitcher.id, fielderPositionFor('P')),
       primaryColor: fieldingColors.primary,
       secondaryColor: fieldingColors.secondary,
+      heightScale: scaleFromHeight(pitcher.heightFt),
     });
   }
   const catcherPlayer = pickByPrimary(ctx.input.playerIndex, fieldingLineupIds, 'C');
@@ -512,6 +530,7 @@ export const buildScene = (
         position: fielderPosFor(catcherPlayer.id, fielderPositionFor('C')),
         primaryColor: fieldingColors.primary,
         secondaryColor: fieldingColors.secondary,
+        heightScale: scaleFromHeight(catcherPlayer.heightFt),
       }
     : null;
   if (catcher) fielders.push(catcher);
@@ -525,6 +544,7 @@ export const buildScene = (
       position: fielderPosFor(p.id, fielderPositionFor(pos)),
       primaryColor: fieldingColors.primary,
       secondaryColor: fieldingColors.secondary,
+      heightScale: scaleFromHeight(p.heightFt),
     });
   }
 
@@ -558,6 +578,7 @@ export const buildScene = (
       primaryColor: battingColors.primary,
       secondaryColor: battingColors.secondary,
       swingFrac,
+      heightScale: scaleFromHeight(batter.heightFt),
     };
   }
 
@@ -576,6 +597,7 @@ export const buildScene = (
         position: render.position,
         primaryColor: battingColors.primary,
         secondaryColor: battingColors.secondary,
+        heightScale: heightScaleFor(runnerId),
       });
     }
   }
@@ -743,6 +765,7 @@ export const buildScene = (
           primaryColor: winnerColors.primary,
           secondaryColor: winnerColors.secondary,
           cheerFrac,
+          heightScale: heightScaleFor(pid),
         });
       }
       displayPitcher = linePlayers[0] ?? null;
@@ -781,6 +804,7 @@ export const buildScene = (
     batterStats,
     pitcherStats,
     onDeckBatterId,
+    strikeZone: buildStrikeZone(batter, currentAbPitches),
     lineScore,
     lastBigPlay,
     recentRunsScored: runsScoredPopups.filter((r) => {
@@ -790,6 +814,34 @@ export const buildScene = (
     inningTransition,
     victory,
     simTime,
+  };
+};
+
+// Map a player's listed height to a sprite-size multiplier. Reference 6.0 ft
+// gets 1.0; a 5.55-ft player drops to ~0.93 and a 6.6-ft player rises to
+// ~1.06. Subtle on purpose — too much variance makes the field look busy.
+const scaleFromHeight = (heightFt: number): number => {
+  const delta = heightFt - 6.0;
+  return Math.max(0.92, Math.min(1.08, 1 + delta * 0.13));
+};
+
+// Cap the on-screen strike-zone trail at the number of pitches an at-bat
+// can plausibly run to. We keep the most recent N so even long fouled-off
+// at-bats stay readable instead of blanketing the grid.
+const STRIKE_ZONE_MAX_PITCHES = 12;
+
+const buildStrikeZone = (
+  batter: import('../world/types.js').Player | null | undefined,
+  pitches: readonly StrikeZonePitchMark[],
+): StrikeZoneViewerInfo | null => {
+  if (!batter) return null;
+  const trimmed =
+    pitches.length <= STRIKE_ZONE_MAX_PITCHES
+      ? pitches
+      : pitches.slice(pitches.length - STRIKE_ZONE_MAX_PITCHES);
+  return {
+    batterHeightFt: batter.heightFt,
+    pitches: trimmed,
   };
 };
 
