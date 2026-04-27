@@ -27,6 +27,8 @@ interface MenuHandle {
   setView(view: MenuView): void;
   /** Force a re-render — e.g. after live-game scores ticked. */
   refresh(): void;
+  /** Open the menu (if closed) and navigate to the given player's view. */
+  goToPlayer(playerId: PlayerId): void;
 }
 
 export const mountMenu = (
@@ -159,6 +161,18 @@ export const mountMenu = (
       render();
     },
     refresh() { if (isOpen) render(); },
+    goToPlayer(playerId: PlayerId) {
+      // Jump straight to the player view; clear any drill-down history so
+      // the back button doesn't return to a stale state from a previous
+      // session of the menu.
+      backStack.length = 0;
+      state = { view: 'players', selectedPlayer: playerId };
+      if (!isOpen) {
+        isOpen = true;
+        root.classList.remove('hidden');
+      }
+      render();
+    },
   };
 
   return handle;

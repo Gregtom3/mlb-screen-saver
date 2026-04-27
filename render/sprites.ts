@@ -1,4 +1,5 @@
 import type { ScenePlayer, SceneState } from './types.js';
+import type { Player, PlayerId } from '../world/types.js';
 import { worldToScreen, type FieldTransform } from './transform.js';
 
 // 12×12 pixel-art player, top-down ¾ view. Encoded as a string grid:
@@ -134,14 +135,43 @@ const drawPlayer = (
     ctx.moveTo(s.x + handleX, cy + handleY);
     ctx.lineTo(s.x + tipX, cy + tipY);
     ctx.stroke();
-  } else if (p.role === 'pitcher') {
+  } else if (p.role === 'pitcher' && (p.cheerFrac ?? 0) === 0) {
     // Rubber strip drawn at the GROUND, not bobbed (it's a fixed mark on the field).
+    // Skip for the winning pitcher in the high-five line — they're not on
+    // the rubber, they're at second base celebrating.
     ctx.fillStyle = '#f3eedb';
     ctx.fillRect(
       Math.floor(s.x - pixelSize * 3),
       Math.floor(s.y + pixelSize * 6),
       Math.ceil(pixelSize * 6),
       Math.max(1, Math.ceil(pixelSize * 0.6)),
+    );
+  }
+
+  // Hand-raise gesture for the post-game high-five line. Drawn as a small
+  // arm + open hand reaching above the cap, in the team's primary color so
+  // it reads as part of the player.
+  const cheerFrac = p.cheerFrac ?? 0;
+  if (cheerFrac > 0.05) {
+    const armLen = pixelSize * (4 + cheerFrac * 2);
+    const armW = Math.max(1.2, pixelSize * 0.9);
+    const armX = s.x;
+    const armBaseY = cy - pixelSize * 4;
+    ctx.strokeStyle = p.primaryColor;
+    ctx.lineWidth = armW;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(armX, armBaseY);
+    ctx.lineTo(armX, armBaseY - armLen);
+    ctx.stroke();
+    // Open hand: small skin-tone square at the tip.
+    ctx.fillStyle = SKIN_COLOR;
+    const handSize = Math.max(2, Math.ceil(pixelSize * 1.4));
+    ctx.fillRect(
+      Math.round(armX - handSize / 2),
+      Math.round(armBaseY - armLen - handSize / 2),
+      handSize,
+      handSize,
     );
   }
 };
@@ -189,10 +219,100 @@ const drawBall = (
   }
 };
 
+// Returns every on-field player in a stable iteration order, used both for
+// drawing labels and for hover hit-testing. Catcher first → fielders →
+// pitcher → runners → batter so visual stacking matches input precedence:
+// when sprites overlap, the topmost-drawn player wins the hover.
+const visiblePlayers = (scene: SceneState): readonly ScenePlayer[] => {
+  const out: ScenePlayer[] = [];
+  if (scene.catcher) out.push(scene.catcher);
+  for (const f of scene.fielders) out.push(f);
+  if (scene.pitcher) out.push(scene.pitcher);
+  for (const r of scene.runners) out.push(r);
+  if (scene.batter) out.push(scene.batter);
+  return out;
+};
+
+// Half-extent of the clickable/hoverable hit area around a sprite center,
+// in screen pixels. Slightly larger than the 12-px sprite so the label
+// region above the sprite is also targetable.
+const hitRadiusPx = (t: FieldTransform): number => {
+  const pixelSize = Math.max(1.5, t.pixelsPerFoot * SCALE_PX_PER_FT);
+  return Math.max(10, pixelSize * 7);
+};
+
+export interface PlayerHit {
+  readonly id: PlayerId;
+  readonly screen: { x: number; y: number };
+}
+
+// Find the topmost player under the given screen coordinates, matching the
+// draw order in drawScene so the visually-on-top sprite wins ties.
+export const findPlayerAtScreen = (
+  scene: SceneState,
+  t: FieldTransform,
+  screenX: number,
+  screenY: number,
+): PlayerHit | null => {
+  const radius = hitRadiusPx(t);
+  let best: PlayerHit | null = null;
+  let bestDist = radius * radius;
+  // Iterate in reverse so later (topmost) sprites take precedence on overlap.
+  const all = visiblePlayers(scene);
+  for (let i = all.length - 1; i >= 0; i--) {
+    const p = all[i]!;
+    const s = worldToScreen(p.position, t);
+    const dx = screenX - s.x;
+    const dy = screenY - s.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 <= bestDist) {
+      best = { id: p.id, screen: s };
+      bestDist = d2;
+    }
+  }
+  return best;
+};
+
+const LABEL_FONT_FAINT = 'bold 10px ui-monospace, "JetBrains Mono", monospace';
+const LABEL_FONT_HOVER = 'bold 12px ui-monospace, "JetBrains Mono", monospace';
+
+const drawPlayerLabel = (
+  ctx: CanvasRenderingContext2D,
+  t: FieldTransform,
+  p: ScenePlayer,
+  fullName: string,
+  hovered: boolean,
+): void => {
+  const s = worldToScreen(p.position, t);
+  const pixelSize = Math.max(1.5, t.pixelsPerFoot * SCALE_PX_PER_FT);
+  // Sit the label just above the cap. The bobbing sprite has ~6 pixels of
+  // headroom; we add a small extra gap so the text never collides.
+  const labelY = s.y - pixelSize * 7.5;
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.font = hovered ? LABEL_FONT_HOVER : LABEL_FONT_FAINT;
+  // Outline first for legibility against grass.
+  ctx.lineWidth = hovered ? 3 : 2;
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = hovered ? 'rgba(8, 10, 14, 0.95)' : 'rgba(8, 10, 14, 0.55)';
+  ctx.strokeText(fullName, s.x, labelY);
+  ctx.fillStyle = hovered ? '#ffffff' : 'rgba(232, 234, 238, 0.55)';
+  ctx.fillText(fullName, s.x, labelY);
+  ctx.restore();
+};
+
+export interface DrawSceneOptions {
+  readonly playerIndex?: ReadonlyMap<PlayerId, Player>;
+  readonly hoveredPlayerId?: PlayerId | null;
+}
+
 export const drawScene = (
   ctx: CanvasRenderingContext2D,
   t: FieldTransform,
   scene: SceneState,
+  opts: DrawSceneOptions = {},
 ): void => {
   const simTime = scene.simTime;
   if (scene.catcher) drawPlayer(ctx, t, scene.catcher, simTime);
@@ -201,4 +321,18 @@ export const drawScene = (
   for (const r of scene.runners) drawPlayer(ctx, t, r, simTime);
   if (scene.batter) drawPlayer(ctx, t, scene.batter, simTime);
   drawBall(ctx, t, scene);
+
+  // Name labels — draw last so they sit on top of sprites and the ball.
+  // Faint by default; crisp + brighter when hovered. Click-to-stats is
+  // wired via findPlayerAtScreen() above.
+  const idx = opts.playerIndex;
+  if (idx) {
+    const hoveredId = opts.hoveredPlayerId ?? null;
+    for (const sp of visiblePlayers(scene)) {
+      const player = idx.get(sp.id);
+      if (!player) continue;
+      const name = `${player.firstName} ${player.lastName}`;
+      drawPlayerLabel(ctx, t, sp, name, sp.id === hoveredId);
+    }
+  }
 };

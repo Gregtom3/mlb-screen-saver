@@ -1,8 +1,13 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'node:path';
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   root: '.',
+  // Production builds are deployed to GitHub Pages at
+  // https://<owner>.github.io/mlb-screen-saver/, so all asset URLs need the
+  // repo-name prefix. The dev server stays at root so `npm run dev` is
+  // unaffected.
+  base: command === 'build' ? '/mlb-screen-saver/' : '/',
   build: {
     target: 'es2022',
     outDir: 'dist',
@@ -22,4 +27,4 @@ export default defineConfig({
     environment: 'node',
     include: ['**/*.test.ts'],
   },
-});
+}));

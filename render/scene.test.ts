@@ -135,6 +135,61 @@ describe('buildScene', () => {
     expect(stillThatOne).toBe(false);
   });
 
+  it('flags an inning transition during the walk-on window after inningEnd', () => {
+    const { events, ctx } = buildContextAndEvents();
+    const inningEnd = events.find((e) => e.kind === 'inningEnd');
+    if (!inningEnd) throw new Error('no inningEnd in events');
+    const scene = buildScene(events, inningEnd.t + 5, ctx);
+    expect(scene.inningTransition).not.toBeNull();
+    expect(scene.inningTransition!.phase).toBe('walk-on');
+    expect(scene.inningTransition!.progress).toBeGreaterThan(0);
+    expect(scene.inningTransition!.progress).toBeLessThanOrEqual(1);
+    // 9 fielders are still on the field, just in motion.
+    const pitcherCount = scene.pitcher ? 1 : 0;
+    const catcherCount = scene.catcher ? 1 : 0;
+    expect(pitcherCount + catcherCount + scene.fielders.length).toBe(9);
+    // Ball and batter are out of frame so the walk-on owns the screen.
+    expect(scene.ball.visible).toBe(false);
+    expect(scene.batter).toBeNull();
+  });
+
+  it('flags walk-off in the lead-up to an inningEnd', () => {
+    const { events, ctx } = buildContextAndEvents();
+    const inningEnd = events.find((e) => e.kind === 'inningEnd');
+    if (!inningEnd) throw new Error('no inningEnd in events');
+    const scene = buildScene(events, inningEnd.t - 5, ctx);
+    expect(scene.inningTransition).not.toBeNull();
+    expect(scene.inningTransition!.phase).toBe('walk-off');
+  });
+
+  it('replaces the field with the winning team for the post-game high-five line', () => {
+    const { events, ctx } = buildContextAndEvents();
+    const last = events[events.length - 1];
+    if (last?.kind !== 'gameEnd') throw new Error('events do not end with gameEnd');
+    const scene = buildScene(events, last.t + 60, ctx);
+    expect(scene.victory).not.toBeNull();
+    const winnerId =
+      last.finalRuns.home >= last.finalRuns.away
+        ? ctx.input.home.teamId
+        : ctx.input.away.teamId;
+    expect(scene.victory!.winnerTeamId).toBe(winnerId);
+    // The on-field nine all wear the winner's primary color.
+    const winnerColors = ctx.teamColors.get(winnerId)!;
+    const allOnField = [
+      scene.pitcher,
+      scene.catcher,
+      ...scene.fielders,
+    ].filter((p): p is NonNullable<typeof p> => p !== null);
+    expect(allOnField).toHaveLength(9);
+    for (const p of allOnField) {
+      expect(p.primaryColor).toBe(winnerColors.primary);
+    }
+    // No live-action props during the celebration.
+    expect(scene.batter).toBeNull();
+    expect(scene.runners).toHaveLength(0);
+    expect(scene.ball.visible).toBe(false);
+  });
+
   it('stacks popups when multiple runners score on the same play', () => {
     const { events, ctx } = buildContextAndEvents();
     // Find a t with multiple to=0 baserunner events (e.g. multi-run hit).

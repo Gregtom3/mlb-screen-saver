@@ -70,6 +70,31 @@ export interface ScenePlayer {
   // 1 = follow-through. Computed in the scene reducer from the most recent
   // pitch event so the swing tracks each pitch.
   readonly swingFrac?: number;
+  // Hand-raise gesture, 0..1. Drives the "high-five" arm during the
+  // post-game victory line and any other cheer scenes.
+  readonly cheerFrac?: number;
+}
+
+// Set during the inning gap so the renderer can swap from "live action"
+// to "teams trading the field" without breaking the 9-fielder invariant.
+// The reducer fills this in by looking ahead to the next inningEnd (walk-off)
+// and back at the most recent one (walk-on), and the sprite renderer just
+// reads positions out of the existing fielders / pitcher / catcher slots.
+export interface InningTransitionInfo {
+  readonly phase: 'walk-off' | 'walk-on';
+  // 0 → just started, 1 → just finished. Useful for fade-in/out cues.
+  readonly progress: number;
+}
+
+// Drives the post-game high-five line. The reducer fills in nine winners,
+// arranged in two staggered ranks, plus a wave phase so the renderer can
+// pulse a cheer through the line.
+export interface VictoryCelebration {
+  readonly winnerTeamId: TeamId;
+  readonly losingTeamId: TeamId;
+  // simTime since the gameEnd event fired — lets the renderer schedule the
+  // walk-in, the cheer wave, and any future flourishes off a single clock.
+  readonly elapsed: number;
 }
 
 export interface SceneBall {
@@ -122,6 +147,11 @@ export interface SceneState {
   // Active "+1" run-scored popups. Filtered to entries within the popup
   // lifetime so the HUD can iterate and draw without further bookkeeping.
   readonly recentRunsScored: readonly RunScoredPopup[];
+  // Set while teams are walking on / off the field between innings. Null
+  // during normal live play.
+  readonly inningTransition: InningTransitionInfo | null;
+  // Set after gameEnd — drives the winning team's high-five line.
+  readonly victory: VictoryCelebration | null;
   // The simTime at which this scene was built — lets the HUD compute
   // event ages for transient effects (popup pop, screen-edge flash).
   readonly simTime: number;

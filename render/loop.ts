@@ -2,10 +2,10 @@ import type { SimEvent } from '../sim/types.js';
 import { drawField } from './field.js';
 import { drawHud } from './hud.js';
 import { buildScene, type SceneContext } from './scene.js';
-import { drawScene } from './sprites.js';
+import { drawScene, findPlayerAtScreen } from './sprites.js';
 import { drawDebugOverlay, isDebugEnabled } from './debug.js';
 import { computeTransform } from './transform.js';
-import type { TeamId } from '../world/types.js';
+import type { PlayerId, TeamId } from '../world/types.js';
 
 // Default playback rate. With ~33-38k sim ticks per game, 20 ticks/wall sec
 // lands ~28-32 minutes per game, in line with the screensaver target.
@@ -39,6 +39,16 @@ export interface RenderLoopHandle {
   setActiveGame(game: ActiveGame): void;
   /** Expose the current canvas, for resize handling. */
   redraw(): void;
+  /**
+   * Hit-test screen coordinates against on-field player sprites.
+   * Returns the topmost player under the cursor or null. Coordinates are
+   * in canvas pixel space (post-DPR), matching what `clientX` minus
+   * `getBoundingClientRect().left` gives after multiplying by DPR.
+   */
+  playerAtScreen(screenX: number, screenY: number): PlayerId | null;
+  /** Set which player is currently hovered (null = none). Triggers a redraw. */
+  setHoveredPlayer(playerId: PlayerId | null): void;
+  hoveredPlayer(): PlayerId | null;
 }
 
 export interface RenderLoopOptions {
@@ -76,6 +86,11 @@ export const createRenderLoop = (
   // before this index have already been emitted (or skipped because they sat
   // before the cursor when we joined the game).
   let eventIdx = 0;
+  let hoveredPlayerId: PlayerId | null = null;
+  // Last drawn scene + transform, retained so the app can hit-test the
+  // canvas in mouse handlers without re-running the scene reducer.
+  let lastScene: ReturnType<typeof buildScene> | null = null;
+  let lastTransform: ReturnType<typeof computeTransform> | null = null;
 
   const finalT = (g: ActiveGame): number => {
     const last = g.events[g.events.length - 1];
@@ -131,7 +146,12 @@ export const createRenderLoop = (
       skyColor: game.sceneCtx.skyColor,
     });
     const scene = buildScene(game.events, simTime, game.sceneCtx);
-    drawScene(ctx, transform, scene);
+    lastScene = scene;
+    lastTransform = transform;
+    drawScene(ctx, transform, scene, {
+      playerIndex: game.sceneCtx.input.playerIndex,
+      hoveredPlayerId,
+    });
     const standings = options.getStandings?.();
     const channel = options.getChannelInfo?.();
     drawHud(
@@ -194,9 +214,22 @@ export const createRenderLoop = (
       // Re-anchor the cursor so we don't fire SFX for events that happened
       // before we tuned in to this channel.
       eventIdx = findIdxAfter(game, simTime);
+      // Channel changes invalidate the prior scene's player ids.
+      hoveredPlayerId = null;
       draw();
     },
     redraw() { draw(); },
+    playerAtScreen(x: number, y: number) {
+      if (!lastScene || !lastTransform) return null;
+      const hit = findPlayerAtScreen(lastScene, lastTransform, x, y);
+      return hit ? hit.id : null;
+    },
+    setHoveredPlayer(id: PlayerId | null) {
+      if (hoveredPlayerId === id) return;
+      hoveredPlayerId = id;
+      draw();
+    },
+    hoveredPlayer() { return hoveredPlayerId; },
   };
 
   draw();
