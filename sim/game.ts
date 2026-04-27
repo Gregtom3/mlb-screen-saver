@@ -315,7 +315,9 @@ const buildBallPath = (
   if (profile.sprayCenter !== undefined && profile.spraySpread !== undefined) {
     sprayDeg = profile.sprayCenter + (rng.next() - 0.5) * 2 * profile.spraySpread + sprayBias;
   } else {
-    sprayDeg = -42 + rng.next() * 84 + sprayBias;
+    // Triangular distribution peaked at 0° — most contact goes up the middle,
+    // pull/oppo corners are rarer. (U1 - U2) is symmetric triangular on [-1,1].
+    sprayDeg = 42 * (rng.next() - rng.next()) + sprayBias;
   }
   sprayDeg = clamp(sprayDeg, -44, 44);
 
@@ -363,17 +365,23 @@ interface InPlayResult {
 const sprayDegOf = (ballPath: BallPath): number =>
   (Math.atan2(ballPath.landingX, Math.max(1, ballPath.landingY)) * 180) / Math.PI;
 
+// Bands sized so SS/2B own the wide middle ranges they actually cover and
+// the pitcher only handles the narrow up-the-middle slice. Combined with the
+// triangular spray distribution, this yields roughly MLB-shaped chance counts.
 const pickInfieldPosition = (spray: number): Position => {
-  if (spray < -18) return '3B';
-  if (spray < -6) return 'SS';
-  if (spray < 6) return 'P';
-  if (spray < 18) return '2B';
+  if (spray < -20) return '3B';
+  if (spray < -3) return 'SS';
+  if (spray < 3) return 'P';
+  if (spray < 20) return '2B';
   return '1B';
 };
 
+// Tighter CF band than naive equal thirds because the triangular spray
+// distribution (peaked at 0deg) would otherwise hand center field >55% of
+// outfield chances. Real MLB CF gets ~38-40%; this lands in that range.
 const pickOutfieldPosition = (spray: number): Position => {
-  if (spray < -15) return 'LF';
-  if (spray < 15) return 'CF';
+  if (spray < -10) return 'LF';
+  if (spray < 10) return 'CF';
   return 'RF';
 };
 

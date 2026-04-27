@@ -16,7 +16,8 @@
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
     "league:print": "tsx app/cli.ts",
-    "game:play": "tsx app/play-game.ts"
+    "game:play": "tsx app/play-game.ts",
+    "play:analyze": "tsx app/analyze-plays.ts"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
