@@ -42,19 +42,26 @@ export const ON_DECK_LEFT: FieldPoint = { x: -22, y: -4 };
 export const ON_DECK_RIGHT: FieldPoint = { x: 22, y: -4 };
 export const ON_DECK_RADIUS_FT = 2.5;
 
-// Dugouts — recessed rectangles flush to the backstop, centered on the
-// existing scene-side dugout markers (±75x in /render/scene.ts). Shape
-// chosen so the bench reads at screensaver scale: ~46ft wide × ~9ft deep.
+// Dugouts — recessed rectangles in foul territory, flanking the foul lines
+// roughly a third of the way from home toward 1B / 3B. Sit between the
+// chalk lines and the lower-bowl front edge so they read as part of the
+// stadium silhouette instead of stranded boxes behind home plate (the
+// previous y=-22 placement put them between home and the floating "smile"
+// arc, which looked broken).
+//
+// Shape sized to read at screensaver scale: ~42ft wide × ~9ft deep, parallel
+// to the baseline. Sim-side runner walk-offs (in /render/scene.ts) read
+// these constants so the path-out still ends at the dugout.
 export const DUGOUT_LEFT_RECT = {
   cx: -75,
-  cy: -22,
-  widthFt: 46,
+  cy: 26,
+  widthFt: 42,
   depthFt: 9,
 } as const;
 export const DUGOUT_RIGHT_RECT = {
   cx: 75,
-  cy: -22,
-  widthFt: 46,
+  cy: 26,
+  widthFt: 42,
   depthFt: 9,
 } as const;
 

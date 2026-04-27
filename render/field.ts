@@ -18,9 +18,11 @@ import {
 } from './stadium-chrome.js';
 import { drawGrassPattern } from './grass-patterns.js';
 import {
-  drawOutfieldStands,
-  drawHomeBowlStands,
+  drawStadiumBowlBack,
+  drawStadiumBowlFront,
 } from './crowd.js';
+import { buildStadiumBowl } from './stadium-bowl.js';
+import { drawSky } from './sky.js';
 import {
   drawStadiumCosmetic,
   flagAmplitudeFor,
@@ -29,11 +31,26 @@ import type { Stadium } from '../world/types.js';
 
 // drawField is the static park art. Per CLAUDE.md the renderer is a pure
 // function of (event log, tick); this layer paints everything that doesn't
-// depend on player positions or the ball. The layering is deliberate —
-// see the order in `drawField` below — so stadium chrome (warning track,
-// foul poles, dugouts) overlays the grass pattern but sits beneath sprites.
+// depend on player positions or the ball. Layer order is:
+//
+//   1.  sky gradient + skyline silhouette + moon + light towers (back)
+//   2.  beyond-wall quirk cosmetics (mountains, ponds, clock tower)
+//   3.  stadium bowl BACK     (back-wall concrete + upper deck + roof)
+//   4.  outfield wall outline + warning track
+//   5.  outfield grass + mow pattern + in-field cosmetics
+//   6.  infield dirt + infield grass + mound
+//   7.  on-wall quirk cosmetics (ivy, distance signs)
+//   8.  foul lines
+//   9.  backstop, dugouts, batter's boxes, on-deck circles
+//   10. stadium bowl FRONT    (lower-bowl seats + front railing)
+//   11. foul poles
+//   12. bases
+//
+// The crucial change vs. the previous implementation: the bowl is one
+// continuous shape (see stadium-bowl.ts), drawn in TWO passes around the
+// rest of the park art. That kills the "smile" gap behind home plate and
+// fills the void above the outfield with a real upper-deck silhouette.
 
-const SKY = '#0e1a26';
 const DEFAULT_GRASS_OUTFIELD = '#3b6e3a';
 const DIRT = '#9a6a3d';
 const DIRT_DARK = '#7c4f2a';
@@ -44,8 +61,8 @@ export interface FieldDrawOptions {
   // Per-stadium grass color from the stadium record's atmosphere.grassShade.
   // Falls back to the default field green if not provided.
   readonly grassShade?: string;
-  // The background color outside the wall — Phase 6 atmosphere will tint this
-  // per-stadium.
+  // Per-stadium horizon-glow tint at the very bottom of the sky gradient.
+  // Optional — sky.ts has a sensible default warm bloom.
   readonly skyColor?: string;
   // Full stadium record. When provided, the renderer uses its dimensions
   // (per-segment wall arc), atmosphere (grass pattern, seat palette,
@@ -102,14 +119,27 @@ export const drawField = (
   const simTime = options.simTime ?? 0;
   const inning = options.inning ?? 1;
   const wall = buildWallPath(dims);
+  const bowl = buildStadiumBowl(
+    t,
+    wall,
+    atmosphere?.seatPalette ? { seatPalette: atmosphere.seatPalette } : {},
+  );
 
-  // ---- Layer 1: sky / outside-the-park background --------------------------
-  ctx.fillStyle = options.skyColor ?? SKY;
-  ctx.fillRect(0, 0, t.canvasWidth, t.canvasHeight);
+  // ---- Layer 1: sky / skyline / moon / light towers -----------------------
+  drawSky(
+    {
+      ctx,
+      transform: t,
+      wall,
+      simTime,
+      ...(options.skyColor ? { skyTint: options.skyColor } : {}),
+    },
+    bowl.lightTowers,
+  );
 
-  // ---- Layer 2: distant silhouette / beyond-wall quirk decorations --------
-  // (mountains, ponds, clock tower — drawn in sky band before stands so
-  // stands occlude any spillover.)
+  // ---- Layer 2: beyond-wall quirk decorations -----------------------------
+  // Mountains, ponds, clock towers, mascot statues — drawn after the sky
+  // but before the bowl so the bowl silhouette occludes any spillover.
   if (atmosphere) {
     drawStadiumCosmetic(quirk, {
       ctx,
@@ -120,20 +150,17 @@ export const drawField = (
     });
   }
 
-  // ---- Layer 3: stands & roof bowl ----------------------------------------
+  // ---- Layer 3: stadium bowl BACK (concrete + upper deck + roof) ----------
   if (atmosphere) {
-    drawOutfieldStands({
+    drawStadiumBowlBack({
       ctx,
       transform: t,
       atmosphere,
-      wall,
+      bowl,
       inning,
       simTime,
     });
   }
-
-  const grassBase = options.grassShade ?? atmosphere?.grassShade ?? DEFAULT_GRASS_OUTFIELD;
-  const grassInfield = shiftHex(grassBase, +0.08);
 
   // ---- Layer 4: outfield wall ---------------------------------------------
   drawOutfieldWall(ctx, t, wall);
@@ -141,6 +168,8 @@ export const drawField = (
   // ---- Layer 5: outfield grass + selected pattern --------------------------
   // Everything from here in is clipped to fair territory so the dirt and
   // outfield grass can never bleed across the foul lines.
+  const grassBase = options.grassShade ?? atmosphere?.grassShade ?? DEFAULT_GRASS_OUTFIELD;
+  const grassInfield = shiftHex(grassBase, +0.08);
   ctx.save();
   ctx.beginPath();
   fairTerritoryPath(ctx, t, wall);
@@ -191,10 +220,7 @@ export const drawField = (
   // ---- Layer 6: warning track (drawn unclipped, sits inside the wall) -----
   drawWarningTrack(ctx, t, wall);
 
-  // Re-clip for the on-wall decorations that need to read as painted on
-  // the wall surface (numbers, ivy). Without a clip the ivy would bleed
-  // into the foul band; with this clip it tucks against the inside of
-  // the wall outline.
+  // ---- Layer 7: on-wall quirk cosmetics (ivy, distance signs) -------------
   if (atmosphere) {
     drawStadiumCosmetic(quirk, {
       ctx,
@@ -205,13 +231,7 @@ export const drawField = (
     });
   }
 
-  // ---- Layer 7: foul poles --------------------------------------------------
-  drawFoulPoles(ctx, t, wall, {
-    flagAmplitude: flagAmplitudeFor(quirk),
-    simTime,
-  });
-
-  // ---- Layer 8: foul lines --------------------------------------------------
+  // ---- Layer 8: foul lines -------------------------------------------------
   ctx.strokeStyle = FOUL_LINE;
   ctx.lineWidth = 2;
   const home = worldToScreen(HOME_PLATE, t);
@@ -224,19 +244,7 @@ export const drawField = (
   ctx.lineTo(rf.x, rf.y);
   ctx.stroke();
 
-  // ---- Layer 9: home-plate stands (behind dugouts) ------------------------
-  if (atmosphere) {
-    drawHomeBowlStands({
-      ctx,
-      transform: t,
-      atmosphere,
-      wall,
-      inning,
-      simTime,
-    });
-  }
-
-  // ---- Layer 10: backstop, dugouts, batter's boxes, on-deck circles -------
+  // ---- Layer 9: backstop, dugouts, batter's boxes, on-deck circles -------
   drawBackstop(ctx, t);
   drawDugouts(
     ctx,
@@ -246,7 +254,27 @@ export const drawField = (
   drawBatterBoxes(ctx, t);
   drawOnDeckCircles(ctx, t);
 
-  // ---- Layer 11: bases ------------------------------------------------------
+  // ---- Layer 10: stadium bowl FRONT (lower-bowl seats + front railing) ----
+  // Drawn AFTER dugouts so the dugouts read as carved into the front of
+  // the bowl rather than floating in foul territory.
+  if (atmosphere) {
+    drawStadiumBowlFront({
+      ctx,
+      transform: t,
+      atmosphere,
+      bowl,
+      inning,
+      simTime,
+    });
+  }
+
+  // ---- Layer 11: foul poles ------------------------------------------------
+  drawFoulPoles(ctx, t, bowl.foulPoleBase, {
+    flagAmplitude: flagAmplitudeFor(quirk),
+    simTime,
+  });
+
+  // ---- Layer 12: bases ------------------------------------------------------
   drawBase(ctx, t, FIRST_BASE);
   drawBase(ctx, t, SECOND_BASE);
   drawBase(ctx, t, THIRD_BASE);

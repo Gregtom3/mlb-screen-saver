@@ -1,21 +1,18 @@
-import { worldToScreen, type FieldTransform } from './transform.js';
-import { HOME_PLATE } from './field-geometry.js';
-import type { WallPath } from './wall.js';
+import type { FieldTransform } from './transform.js';
 import type { StadiumAtmosphere } from '../world/types.js';
+import type { BowlPoint, BowlTierSpec, StadiumBowl } from './stadium-bowl.js';
 
-// Crowd renderer. Two stand bands — the deep arc behind home plate and
-// the bleachers outside the outfield wall. Each row is a colored band in
-// the team's seat palette; fan pixels are scattered above at a density
-// driven by inning + crowdDensityCurve. All stochastic decisions go
-// through a deterministic hash of (simTime, seatIndex) so successive
-// frames at the same simTime produce byte-identical output — the
-// determinism contract from CLAUDE.md applies here too.
+// Crowd renderer. Now draws a continuous tiered bowl built from the polyline
+// in stadium-bowl.ts — back-wall concrete, lower bowl, concourse gap, upper
+// deck, and a roof facade. All stochastic decisions go through a
+// deterministic hash of (seatId, simTime) so successive frames at the same
+// simTime produce byte-identical output — the determinism contract from
+// CLAUDE.md applies here.
 
 const SKIN_TONES = ['#c79475', '#a36a45', '#8a4f30', '#e2b89c'];
-const HAT_HIGHLIGHT = 0.18; // % of fan pixels that flash a brighter hat color
+const HAT_HIGHLIGHT = 0.18; // fraction of fan pixels that flash a brighter palette color
+const RAILING_COLOR = '#1a1d22';
 
-// Cheap integer hash — used to roll deterministic per-seat decisions
-// (skin tone, fan-vs-empty, jump phase). Same input → same output.
 const hash32 = (a: number, b: number): number => {
   let x = (a * 0x9e3779b1) ^ (b * 0x85ebca6b);
   x = Math.imul(x ^ (x >>> 16), 0x85ebca6b);
@@ -45,7 +42,7 @@ interface CrowdArgs {
   readonly ctx: CanvasRenderingContext2D;
   readonly transform: FieldTransform;
   readonly atmosphere: StadiumAtmosphere;
-  readonly wall: WallPath;
+  readonly bowl: StadiumBowl;
   readonly inning: number;
   readonly simTime: number;
   // Optional wave-burst — angle band where fans are jumping right now.
@@ -53,84 +50,143 @@ interface CrowdArgs {
   readonly waveStrength?: number; // 0..1
 }
 
-// Draw a band of stands using the per-stadium seat palette. Each row is
-// 1 px tall and gets ~20-30% fan pixels at full density. Lower density
-// just thins out the speckle.
-const drawStandsBand = (
-  args: CrowdArgs & {
-    readonly path: readonly { x: number; y: number }[];
-    readonly outwardNormal: readonly { nx: number; ny: number }[];
-    readonly depthPx: number;
-    readonly bandSeed: number;
-  },
-): void => {
-  const { ctx, atmosphere, simTime, path, outwardNormal, depthPx, bandSeed } =
-    args;
-  const palette = atmosphere.seatPalette.length
-    ? atmosphere.seatPalette
-    : ['#3a4048'];
-  const density = densityForInning(atmosphere.crowdDensityCurve, args.inning);
-
-  // Fill the empty bowl first — vertical stripes of palette color so the
-  // section blocks read like a real ballpark.
-  for (let i = 0; i < path.length; i++) {
-    const base = path[i]!;
-    const norm = outwardNormal[i]!;
-    const colorIdx = Math.floor((i / path.length) * palette.length * 1.7) %
-      palette.length;
-    const color = palette[colorIdx]!;
-    ctx.fillStyle = color;
-    // Outward sweep — a thin column reaching `depthPx` past the path.
-    const tipX = base.x + norm.nx * depthPx;
-    const tipY = base.y + norm.ny * depthPx;
-    ctx.beginPath();
-    const sx = norm.ny;
-    const sy = -norm.nx;
-    const half = 1.2; // 2-3 px column width
-    ctx.moveTo(base.x - sx * half, base.y - sy * half);
-    ctx.lineTo(tipX - sx * half, tipY - sy * half);
-    ctx.lineTo(tipX + sx * half, tipY + sy * half);
-    ctx.lineTo(base.x + sx * half, base.y + sy * half);
-    ctx.closePath();
-    ctx.fill();
+// Build a closed polygon from two parallel offsets of the bowl front edge.
+// `inner` is at innerOffsetPx outward from the front; `outer` is at
+// (innerOffsetPx + depthPx) outward. This is the back-wall + tier-fill
+// geometry shared by every tier.
+const tierPolygon = (
+  front: readonly BowlPoint[],
+  innerOffsetPx: number,
+  depthPx: number,
+  riseLiftPx: number,
+): { inner: { x: number; y: number }[]; outer: { x: number; y: number }[] } => {
+  const inner: { x: number; y: number }[] = [];
+  const outer: { x: number; y: number }[] = [];
+  for (const p of front) {
+    inner.push({
+      x: p.screen.x + p.outward.nx * innerOffsetPx,
+      y: p.screen.y + p.outward.ny * innerOffsetPx - riseLiftPx,
+    });
+    outer.push({
+      x: p.screen.x + p.outward.nx * (innerOffsetPx + depthPx),
+      y: p.screen.y + p.outward.ny * (innerOffsetPx + depthPx) - riseLiftPx,
+    });
   }
+  return { inner, outer };
+};
 
-  // Fan speckle — walk along the path in 1-px steps, scatter fan-head
-  // pixels at random depths. Determinism: the seat index `i*depthCells + d`
-  // plus the band-seed produces the same output for the same simTime.
-  const depthCells = Math.max(1, Math.floor(depthPx));
-  // Slow flicker: each frame we pick a few seats per row that brighten.
+// Trace a ribbon polygon: walk inner forward, then outer backward, close.
+const tracePolygon = (
+  ctx: CanvasRenderingContext2D,
+  inner: readonly { x: number; y: number }[],
+  outer: readonly { x: number; y: number }[],
+): void => {
+  if (inner.length === 0) return;
+  ctx.beginPath();
+  ctx.moveTo(inner[0]!.x, inner[0]!.y);
+  for (let i = 1; i < inner.length; i++) ctx.lineTo(inner[i]!.x, inner[i]!.y);
+  for (let i = outer.length - 1; i >= 0; i--) ctx.lineTo(outer[i]!.x, outer[i]!.y);
+  ctx.closePath();
+};
+
+// Draw the structural fill (concrete back wall + section block colors) for
+// a tier. This is the layer that turns the old "picket fence" into a real
+// stadium silhouette: a solid polygon, then a per-section color sweep
+// painted across it as vertical stripes following the outward normal.
+const drawTierStructure = (
+  ctx: CanvasRenderingContext2D,
+  front: readonly BowlPoint[],
+  tier: BowlTierSpec,
+): void => {
+  const { inner, outer } = tierPolygon(
+    front,
+    tier.innerOffsetPx,
+    tier.depthPx,
+    tier.riseLiftPx,
+  );
+  // Back-wall concrete fill. This is what gives the bowl its silhouette.
+  ctx.save();
+  ctx.fillStyle = tier.backWallColor;
+  tracePolygon(ctx, inner, outer);
+  ctx.fill();
+  ctx.restore();
+
+  // Section block colors — vertical stripes across the tier ribbon. We walk
+  // each front sample and shoot a thin column outward in its palette color.
+  // Section width = a few samples, so adjacent samples share a color.
+  if (tier.seatPalette.length > 0 && tier.seatRows > 0) {
+    const SECTION_LEN = 3; // samples per section
+    for (let i = 0; i < front.length; i++) {
+      const innerP = inner[i]!;
+      const outerP = outer[i]!;
+      const colorIdx = Math.floor(i / SECTION_LEN) % tier.seatPalette.length;
+      // Slight palette shifting so adjacent sections don't repeat exactly.
+      const tint = (Math.floor(i / SECTION_LEN) * 1.7) % tier.seatPalette.length;
+      const color = tier.seatPalette[Math.floor(tint) % tier.seatPalette.length] ?? tier.seatPalette[colorIdx]!;
+      ctx.fillStyle = color;
+      // 1.5-px wide column from inner to outer.
+      const dx = outerP.x - innerP.x;
+      const dy = outerP.y - innerP.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const sx = -dy / len; // perpendicular for column width
+      const sy = dx / len;
+      const half = 0.9;
+      ctx.beginPath();
+      ctx.moveTo(innerP.x - sx * half, innerP.y - sy * half);
+      ctx.lineTo(outerP.x - sx * half, outerP.y - sy * half);
+      ctx.lineTo(outerP.x + sx * half, outerP.y + sy * half);
+      ctx.lineTo(innerP.x + sx * half, innerP.y + sy * half);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+};
+
+// Stair-stepped fan rows for a tier. Each row is offset progressively
+// further from the bowl front, with deterministic per-seat fan / empty /
+// flicker decisions. Replaces the old single-line speckle.
+const drawTierFans = (
+  ctx: CanvasRenderingContext2D,
+  front: readonly BowlPoint[],
+  tier: BowlTierSpec,
+  density: number,
+  simTime: number,
+  bandSeed: number,
+  wave?: { centerDeg: number; strength: number },
+): void => {
+  if (tier.seatRows <= 0) return;
+  const rowSpacing = tier.depthPx / tier.seatRows;
   const flickerEpoch = Math.floor(simTime / 6);
-  for (let i = 0; i < path.length; i++) {
-    const base = path[i]!;
-    const norm = outwardNormal[i]!;
-    for (let d = 0; d < depthCells; d++) {
-      const seatId = (i * 257 + d) ^ bandSeed;
+  const palette = tier.seatPalette;
+  for (let row = 0; row < tier.seatRows; row++) {
+    // Each row sits midway through its slice of the tier.
+    const rowOffset = tier.innerOffsetPx + (row + 0.5) * rowSpacing;
+    for (let i = 0; i < front.length; i++) {
+      const p = front[i]!;
+      const fx = p.screen.x + p.outward.nx * rowOffset;
+      const fy = p.screen.y + p.outward.ny * rowOffset - tier.riseLiftPx;
+      const seatId = (i * 257 + row * 9001) ^ bandSeed;
       const r = rand01(seatId, 0);
-      if (r > density) continue; // empty seat
-      const fx = base.x + norm.nx * (d + 0.5);
-      const fy = base.y + norm.ny * (d + 0.5);
-      // Wave-burst: lift fans within ±15° of the wave center for a beat.
+      if (r > density) continue;
+      // Wave-burst lift: for outfield-bowl seats only (anglePct between
+      // ~0..0.5), lift fans within a window of the wave-center angle.
       let lift = 0;
-      if (args.waveStrength && args.waveStrength > 0 && args.waveCenterAngleDeg !== undefined) {
-        // Map seat index to a coarse angle estimate (only used here).
-        const seatAngle = ((i / path.length) * 90) - 45;
-        const delta = Math.abs(seatAngle - args.waveCenterAngleDeg);
-        if (delta < 18) {
-          const fall = 1 - delta / 18;
-          lift = -1 * fall * args.waveStrength;
+      if (wave && wave.strength > 0) {
+        const seatAngle = (p.anglePct - 0.25) * 360; // rough mapping
+        const delta = Math.abs(seatAngle - wave.centerDeg);
+        if (delta < 22) {
+          const fall = 1 - delta / 22;
+          lift = -1 * fall * wave.strength;
         }
       }
-      // Pick a fan color: skin pixel (head) or a hat tinted from palette.
       const colorRoll = rand01(seatId, 1);
       let fanColor: string;
-      if (colorRoll < HAT_HIGHLIGHT) {
+      if (colorRoll < HAT_HIGHLIGHT && palette.length > 0) {
         fanColor = palette[hash32(seatId, 2) % palette.length]!;
       } else {
         fanColor = SKIN_TONES[hash32(seatId, 3) % SKIN_TONES.length]!;
       }
-      // Flicker: every ~6 sim-ticks a thin slice of seats lights up. The
-      // condition is stable across frames within an epoch.
+      // Slow flicker — 1 in ~150 seats brightens for a beat.
       if (rand01(seatId, flickerEpoch) > 0.985) {
         fanColor = '#ffffff';
       }
@@ -140,77 +196,96 @@ const drawStandsBand = (
   }
 };
 
-// Build the polyline + outward-normal pair for the outfield bleachers.
-const outfieldBowlGeometry = (
-  t: FieldTransform,
-  wall: WallPath,
-): { path: { x: number; y: number }[]; outwardNormal: { nx: number; ny: number }[] } => {
-  const home = worldToScreen(HOME_PLATE, t);
-  const path: { x: number; y: number }[] = [];
-  const outwardNormal: { nx: number; ny: number }[] = [];
-  for (const s of wall.samples) {
-    const w = worldToScreen(s.point, t);
-    path.push(w);
-    // Normal points away from home plate.
-    const dx = w.x - home.x;
-    const dy = w.y - home.y;
-    const len = Math.hypot(dx, dy) || 1;
-    outwardNormal.push({ nx: dx / len, ny: dy / len });
+// Front railing — a thin dark line right at the inner edge of the lower
+// bowl. Reads as the wall between the field and the front-row seats.
+const drawFrontRailing = (
+  ctx: CanvasRenderingContext2D,
+  front: readonly BowlPoint[],
+): void => {
+  ctx.save();
+  ctx.strokeStyle = RAILING_COLOR;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i < front.length; i++) {
+    const p = front[i]!;
+    if (i === 0) ctx.moveTo(p.screen.x, p.screen.y);
+    else ctx.lineTo(p.screen.x, p.screen.y);
   }
-  return { path, outwardNormal };
+  ctx.stroke();
+  ctx.restore();
 };
 
-// Build the polyline for the home-plate bowl (stands behind home), spanning
-// roughly 220° around the catcher area. Drawn behind the dugouts.
-const homeBowlGeometry = (
-  t: FieldTransform,
-): { path: { x: number; y: number }[]; outwardNormal: { nx: number; ny: number }[] } => {
-  const home = worldToScreen(HOME_PLATE, t);
-  // Sweep from the 1B foul-territory side around behind the plate to the
-  // 3B side. Radius chosen to clear the dugouts.
-  const radiusPx = Math.max(120, t.pixelsPerFoot * 110);
-  const path: { x: number; y: number }[] = [];
-  const outwardNormal: { nx: number; ny: number }[] = [];
-  const start = Math.PI * 0.18; // just past 1B foul line going clockwise
-  const end = Math.PI - Math.PI * 0.18; // mirror on 3B side
-  const steps = 60;
-  for (let i = 0; i <= steps; i++) {
-    const a = start + (end - start) * (i / steps);
-    // Canvas Y grows downward — the home bowl sits below home plate.
-    const x = home.x + Math.cos(a) * radiusPx;
-    const y = home.y + Math.sin(a) * radiusPx;
-    path.push({ x, y });
-    const dx = Math.cos(a);
-    const dy = Math.sin(a);
-    outwardNormal.push({ nx: dx, ny: dy });
+// Roof support struts — sparse vertical ticks visible against the sky. Drawn
+// behind the upper-deck-facing edge of the roof so the roof reads as a
+// shaded canopy rather than a flat band.
+const drawRoofSupports = (
+  ctx: CanvasRenderingContext2D,
+  front: readonly BowlPoint[],
+  tier: BowlTierSpec,
+): void => {
+  ctx.save();
+  ctx.fillStyle = '#0a0c10';
+  for (let i = 0; i < front.length; i += 4) {
+    const p = front[i]!;
+    const innerX = p.screen.x + p.outward.nx * tier.innerOffsetPx;
+    const innerY = p.screen.y + p.outward.ny * tier.innerOffsetPx - tier.riseLiftPx;
+    const outerX = p.screen.x + p.outward.nx * (tier.innerOffsetPx + tier.depthPx);
+    const outerY = p.screen.y + p.outward.ny * (tier.innerOffsetPx + tier.depthPx) - tier.riseLiftPx;
+    // 1-px diagonal strut from inner-bottom to outer-top.
+    ctx.fillRect(Math.round(innerX), Math.round(innerY - 1), 1, 1);
+    ctx.fillRect(Math.round(outerX), Math.round(outerY - 1), 1, 1);
   }
-  return { path, outwardNormal };
+  ctx.restore();
 };
 
-// Public entrypoints — caller draws the empty-bowl band first, then the
-// crowd speckle on top. Two passes simplify the layering when other chrome
-// (foul poles, scoreboards) needs to slot between.
+// Public entrypoint — draws all back-of-bowl layers (concrete + upper deck +
+// roof) before the field is drawn. The lower-bowl seats and front railing
+// are deferred to drawStadiumBowlFront so the field/wall/dugouts can slot
+// between them.
+export const drawStadiumBowlBack = (args: CrowdArgs): void => {
+  const { ctx, atmosphere, bowl, inning, simTime } = args;
+  const density = densityForInning(atmosphere.crowdDensityCurve, inning);
+  const wave =
+    args.waveStrength && args.waveStrength > 0 && args.waveCenterAngleDeg !== undefined
+      ? { centerDeg: args.waveCenterAngleDeg, strength: args.waveStrength }
+      : undefined;
 
-export const drawOutfieldStands = (args: CrowdArgs): void => {
-  const geo = outfieldBowlGeometry(args.transform, args.wall);
-  const depthPx = Math.max(8, args.transform.pixelsPerFoot * 24);
-  drawStandsBand({
-    ...args,
-    path: geo.path,
-    outwardNormal: geo.outwardNormal,
-    depthPx,
-    bandSeed: 0xfac3,
-  });
+  // Upper deck + fans.
+  drawTierStructure(ctx, bowl.front, bowl.tiers.upper);
+  drawTierFans(
+    ctx,
+    bowl.front,
+    bowl.tiers.upper,
+    density * 0.85, // upper deck typically a bit emptier
+    simTime,
+    0xa1c3,
+    wave,
+  );
+
+  // Roof — facade band + a couple of supports peeking into the sky.
+  drawTierStructure(ctx, bowl.front, bowl.tiers.roof);
+  drawRoofSupports(ctx, bowl.front, bowl.tiers.roof);
 };
 
-export const drawHomeBowlStands = (args: CrowdArgs): void => {
-  const geo = homeBowlGeometry(args.transform);
-  const depthPx = Math.max(10, args.transform.pixelsPerFoot * 28);
-  drawStandsBand({
-    ...args,
-    path: geo.path,
-    outwardNormal: geo.outwardNormal,
-    depthPx,
-    bandSeed: 0x7eed,
-  });
+// Lower-bowl seats + front railing. Drawn AFTER the field, dugouts, and
+// foul poles so the front row reads as right next to the action.
+export const drawStadiumBowlFront = (args: CrowdArgs): void => {
+  const { ctx, atmosphere, bowl, inning, simTime } = args;
+  const density = densityForInning(atmosphere.crowdDensityCurve, inning);
+  const wave =
+    args.waveStrength && args.waveStrength > 0 && args.waveCenterAngleDeg !== undefined
+      ? { centerDeg: args.waveCenterAngleDeg, strength: args.waveStrength }
+      : undefined;
+
+  drawTierStructure(ctx, bowl.front, bowl.tiers.lower);
+  drawTierFans(
+    ctx,
+    bowl.front,
+    bowl.tiers.lower,
+    density,
+    simTime,
+    0xfac3,
+    wave,
+  );
+  drawFrontRailing(ctx, bowl.front);
 };

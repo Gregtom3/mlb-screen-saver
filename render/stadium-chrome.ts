@@ -67,6 +67,10 @@ export const drawWarningTrack = (
 // extending well above the wall so they overlay the sky. A small pennant
 // flutters at the top, deterministically driven by simTime so frames are
 // reproducible. Wind quirks can pump the amplitude via `flagAmplitude`.
+//
+// Pole bases are passed in (canvas-space) by the caller — typically the
+// stadium-bowl seam point so the pole reads as anchored to the bowl rather
+// than the bare wall corner.
 export interface FoulPoleOptions {
   readonly heightFt?: number;
   readonly flagAmplitude?: number; // 0..1
@@ -75,7 +79,7 @@ export interface FoulPoleOptions {
 export const drawFoulPoles = (
   ctx: CanvasRenderingContext2D,
   t: FieldTransform,
-  wall: WallPath,
+  basePoints: { left: { x: number; y: number }; right: { x: number; y: number } },
   opts: FoulPoleOptions = {},
 ): void => {
   const heightFt = opts.heightFt ?? 80;
@@ -83,8 +87,7 @@ export const drawFoulPoles = (
   const amp = opts.flagAmplitude ?? 0.4;
   const time = opts.simTime ?? 0;
 
-  const drawPole = (basePoint: { x: number; y: number }, sign: -1 | 1): void => {
-    const base = worldToScreen(basePoint, t);
+  const drawPole = (base: { x: number; y: number }, sign: -1 | 1): void => {
     const top = { x: base.x, y: base.y - heightPx };
     // Pole.
     ctx.strokeStyle = FOUL_POLE;
@@ -93,8 +96,18 @@ export const drawFoulPoles = (
     ctx.moveTo(base.x, base.y);
     ctx.lineTo(top.x, top.y);
     ctx.stroke();
+    // Faint glow at the lamp height — picks up the night-game vibe of the
+    // sky-side light towers without the cost of a real radial gradient.
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 246, 200, 0.18)';
+    ctx.beginPath();
+    ctx.arc(top.x, top.y + 6, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
     // Crossbar / screen — a small arrow pointing into fair territory so the
     // ump can read fair vs. foul.
+    ctx.strokeStyle = FOUL_POLE;
+    ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(top.x, top.y + 4);
     ctx.lineTo(top.x + sign * -8, top.y + 14);
@@ -117,8 +130,8 @@ export const drawFoulPoles = (
     ctx.fill();
   };
 
-  drawPole(wall.leftFoul, -1);
-  drawPole(wall.rightFoul, +1);
+  drawPole(basePoints.left, -1);
+  drawPole(basePoints.right, +1);
 };
 
 // Batter's box — chalk rectangles flanking home plate. Both boxes are

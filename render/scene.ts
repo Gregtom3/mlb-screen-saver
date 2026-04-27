@@ -4,6 +4,8 @@ import {
   HOME_PLATE,
   PITCHERS_MOUND,
   FIELDER_HOME_POSITIONS,
+  DUGOUT_LEFT_RECT,
+  DUGOUT_RIGHT_RECT,
   baseFor,
   lerpPoint,
 } from './field-geometry.js';
@@ -79,8 +81,10 @@ const WALK_OFF_TICKS = 24;
 const RUN_SCORED_POPUP_TICKS = 18;
 // Two stylized dugouts — runners head to the side closer to where they
 // were retired (1B-side for righty grounders, 3B-side for lefty / triples).
-const DUGOUT_RIGHT: FieldPoint = { x: 75, y: -22 };
-const DUGOUT_LEFT: FieldPoint = { x: -75, y: -22 };
+// Targets pulled from the canonical dugout rectangles so the walk-off
+// destination tracks any future re-anchoring.
+const DUGOUT_RIGHT: FieldPoint = { x: DUGOUT_RIGHT_RECT.cx, y: DUGOUT_RIGHT_RECT.cy };
+const DUGOUT_LEFT: FieldPoint = { x: DUGOUT_LEFT_RECT.cx, y: DUGOUT_LEFT_RECT.cy };
 
 // Inning transition pacing. The walk-off starts in the dead time after the
 // 3rd-out play choreo settles and runs up to the inningEnd event; the
