@@ -174,6 +174,29 @@ export interface GameWPTimeline {
   }>;
 }
 
+// Slim per-matchup line. Reuses the BattingLine counter set so the
+// existing fold/derived helpers (AVG, OBP, SLG) work uniformly. We
+// intentionally skip the heavy nested fields (splits, hitChart, gameLog,
+// byMonth, zone) since matchup rows don't need them — they exist to
+// power the on-canvas batter card's "vs this pitcher" stat line, not
+// the menu's deeper drilldowns.
+export interface BvpLine {
+  readonly batterId: PlayerId;
+  readonly pitcherId: PlayerId;
+  PA: number;
+  AB: number;
+  H: number;
+  doubles: number;
+  triples: number;
+  HR: number;
+  RBI: number;
+  BB: number;
+  HBP: number;
+  SO: number;
+  SF: number;
+  SH: number;
+}
+
 export interface SeasonAggregates {
   readonly seasonYear: number;
   readonly batting: Map<PlayerId, BattingLine>;
@@ -182,6 +205,11 @@ export interface SeasonAggregates {
   // WP timelines per finished game, keyed by gameId. Populated by the
   // aggregator so the Live view can play back the chart for any game.
   readonly wpTimelines: Map<GameId, GameWPTimeline>;
+  // Batter-vs-pitcher matchup lines for the season. Outer key = batterId,
+  // inner key = pitcherId. Used by the live HUD's batter card to show
+  // "vs this pitcher: 4-13 .308 1HR" when sample size warrants. Populated
+  // alongside the per-batter and per-pitcher top lines at every atBatEnd.
+  readonly bvpMatchups: Map<PlayerId, Map<PlayerId, BvpLine>>;
   readonly gamesProcessed: number;
 }
 
@@ -225,11 +253,32 @@ export const emptyTeamLine = (teamId: TeamId): TeamLine => ({
   resultsTimeline: [],
 });
 
+export const emptyBvpLine = (
+  batterId: PlayerId,
+  pitcherId: PlayerId,
+): BvpLine => ({
+  batterId,
+  pitcherId,
+  PA: 0,
+  AB: 0,
+  H: 0,
+  doubles: 0,
+  triples: 0,
+  HR: 0,
+  RBI: 0,
+  BB: 0,
+  HBP: 0,
+  SO: 0,
+  SF: 0,
+  SH: 0,
+});
+
 export const emptySeasonAggregates = (seasonYear: number): SeasonAggregates => ({
   seasonYear,
   batting: new Map(),
   pitching: new Map(),
   teams: new Map(),
   wpTimelines: new Map(),
+  bvpMatchups: new Map(),
   gamesProcessed: 0,
 });

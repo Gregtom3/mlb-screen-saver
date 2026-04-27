@@ -131,6 +131,55 @@ describe('buildSeasonAggregates', () => {
   });
 });
 
+describe('bvpMatchups', () => {
+  it('records at least one matchup per game and accumulates across days', () => {
+    const { league, games } = playFirstNDays(0xb5e_d1, 2);
+    const agg = buildSeasonAggregates(games, league.teams, league.players);
+    // Some batters should have faced multiple pitchers across two days.
+    let totalPairs = 0;
+    let pairsWithMultipleAB = 0;
+    for (const inner of agg.bvpMatchups.values()) {
+      totalPairs += inner.size;
+      for (const line of inner.values()) {
+        if (line.PA >= 2) pairsWithMultipleAB += 1;
+      }
+    }
+    expect(totalPairs).toBeGreaterThan(50);
+    expect(pairsWithMultipleAB).toBeGreaterThan(5);
+  });
+
+  it('per-matchup PA + non-AB events sum to PA, and AB <= PA', () => {
+    const { league, games } = playFirstNDays(0xb5e_d1, 2);
+    const agg = buildSeasonAggregates(games, league.teams, league.players);
+    for (const inner of agg.bvpMatchups.values()) {
+      for (const line of inner.values()) {
+        expect(line.AB).toBeLessThanOrEqual(line.PA);
+        // Walks, HBP, SF, SH never count as ABs but always count as PAs.
+        const nonAb = line.BB + line.HBP + line.SF + line.SH;
+        expect(line.AB + nonAb).toBeLessThanOrEqual(line.PA);
+        // Hits decompose as singles + 2B + 3B + HR; singles >= 0.
+        const singles = line.H - line.doubles - line.triples - line.HR;
+        expect(singles).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
+  it('every per-batter top line PA equals the sum of that batter’s matchup PAs', () => {
+    const { league, games } = playFirstNDays(0xb5e_d1, 2);
+    const agg = buildSeasonAggregates(games, league.teams, league.players);
+    for (const [batterId, line] of agg.batting) {
+      const inner = agg.bvpMatchups.get(batterId);
+      if (!inner) {
+        expect(line.PA).toBe(0);
+        continue;
+      }
+      let sum = 0;
+      for (const m of inner.values()) sum += m.PA;
+      expect(sum).toBe(line.PA);
+    }
+  });
+});
+
 describe('qualifiers', () => {
   it('scales hitter qualifier with team games played', () => {
     const line = { PA: 10, AB: 8, R: 0, H: 0, doubles: 0, triples: 0, HR: 0, RBI: 0, BB: 0, HBP: 0, SO: 0, SF: 0, SH: 0, GIDP: 0, WPA: 0, G: 4, playerId: 'x', teamId: 'y', splits: {}, hitChart: [], gameLog: [], byMonth: {}, zone: [] };

@@ -3,7 +3,7 @@
 A current-state map so a fresh session doesn't have to re-survey the repo.
 Update this file whenever you finish a chunk. Keep it short.
 
-Last reviewed: 2026-04-27 (after fence-aware home runs — sim now gates rolled HRs against the actual wall geometry).
+Last reviewed: 2026-04-27 (after batter-card upgrade — portrait + season AVG/HR/RBI + all-time vs-this-pitcher line).
 
 ## Phase status
 
@@ -15,7 +15,7 @@ Last reviewed: 2026-04-27 (after fence-aware home runs — sim now gates rolled 
 | 3 — Multi-game + UI | ✅ shipped | `PHASE_3.md`. 8 channels, switcher, standings strip. |
 | 4 — Stadium Identity + Polish | ⚠️ partial | Quirks in sim ✅. Stadium visuals ✅ (`PHASE_4_STADIUM_VISUALS.md`). Fence-aware HR sim ✅ (`PHASE_4_FENCE_AWARE_HR.md`: `wallDistanceAtAngle` gates rolled home runs against real fence geometry; short-porch / deep-center HR multipliers retired in favor of emergent park factors). Weather, chiptune, ambient crowd loop ❌. |
 | 5 — Manager Knobs | ❌ not started | `/director` is a one-line stub. No nudges. |
-| 5.5 — Stats + Projections + Menus | ⚠️ partial | `PHASE_5_5*.md`. Aggregator, splits, WPA, projections, all 5 menus shipped. |
+| 5.5 — Stats + Projections + Menus | ⚠️ partial | `PHASE_5_5*.md`. Aggregator, splits, WPA, projections, all 5 menus shipped. Batter-vs-pitcher matchup aggregation + on-canvas batter card with portrait + season AVG/HR/RBI + all-time BvP line shipped (`PHASE_5_5_BATTER_CARD.md`). |
 | 6 — Persistence Across Seasons | ⚠️ partial | `PHASE_6.md`. History schema + multi-season pre-sim ✅. Aging, retirement, draft, free agency, disk save ❌. |
 
 ## Module map
@@ -32,12 +32,12 @@ Last reviewed: 2026-04-27 (after fence-aware home runs — sim now gates rolled 
 | `/director` | User manager nudges → sim input | **One-line placeholder.** |
 | `/app` | Glue, lifecycle, CLI, PBP printers | Complete for current scope. |
 | `/content` | Curated teams, names, stadiums | Complete. Per-player heights + zone fingerprints generated at league init. |
-| `/stats` | Aggregator, derived, splits, WPA, hot/cold, awards | Phase 5.5 + per-pitcher `pitchesByZone` + per-batter zone PA/AB/H/HR cells. |
+| `/stats` | Aggregator, derived, splits, WPA, hot/cold, awards | Phase 5.5 + per-pitcher `pitchesByZone` + per-batter zone PA/AB/H/HR cells + per-batter `bvpMatchups` keyed by (batterId, pitcherId). |
 | `/projections` | Pythagorean + log5 + Monte Carlo standings | New (Phase 5.5). Not in original brief. |
 
 ## Tech stack
 
-TypeScript 5.7 + Vite 6 + Canvas2D. Vitest 2.1 (84 tests). ESLint 9 flat config
+TypeScript 5.7 + Vite 6 + Canvas2D. Vitest 2.1 (88 tests). ESLint 9 flat config
 with `eslint-plugin-import-x` enforcing the `/sim` boundary. Prettier 3.4.
 **Zero runtime dependencies.** Bundle ~145 KB / ~47 KB gzipped.
 

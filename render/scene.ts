@@ -10,6 +10,7 @@ import {
 import type {
   BatterCardStats,
   BigPlayInfo,
+  BvpStats,
   FieldPoint,
   InningTransitionInfo,
   PitcherCardStats,
@@ -17,10 +18,12 @@ import type {
   SceneLineScore,
   ScenePlayer,
   SceneState,
+  SeasonBatterStats,
   StrikeZonePitchMark,
   StrikeZoneViewerInfo,
   VictoryCelebration,
 } from './types.js';
+import type { BattingLine, BvpLine, SeasonAggregates } from '../stats/types.js';
 import { buildBoxScore } from '../sim/box-score.js';
 import {
   buildAllPlayChoreos,
@@ -124,6 +127,15 @@ interface SceneContext {
   // Optional home-team primary color — used by the dugout trim layer to
   // tint the home dugout's roof rim. Optional for the same reason as above.
   readonly homeTeamPrimary?: string;
+  // Season aggregates for the year. When provided, the scene reducer
+  // surfaces the active batter's season top line (AVG/HR/RBI) and adds
+  // any current-season vs-this-pitcher matchup line into the HUD's BvP
+  // view. Optional so existing scene-test fixtures keep working.
+  readonly seasonAggregates?: SeasonAggregates;
+  // Career batter-vs-pitcher matchup totals across prior seasons (built
+  // by /season/history.ts). Combined with the current season's matchup
+  // counts before being surfaced as the BvpStats on the HUD.
+  readonly careerBvp?: ReadonlyMap<PlayerId, ReadonlyMap<PlayerId, BvpLine>>;
 }
 
 const fielderPositionFor = (
@@ -718,6 +730,27 @@ export const buildScene = (
     }
   }
 
+  // Season + matchup top lines for the active batter. These come from
+  // /stats SeasonAggregates and /season LeagueHistory.careerBvp via the
+  // SceneContext — they're the same numbers the menus show. The HUD
+  // batter card surfaces them as a stat strip beside the current-game
+  // line. When the context lacks aggregates (tests, ad-hoc fixtures)
+  // both fields stay null and the HUD falls back to the existing
+  // current-game-only display.
+  let seasonBatterStats: SeasonBatterStats | null = null;
+  let bvpStats: BvpStats | null = null;
+  if (currentBatterId && ctx.seasonAggregates) {
+    seasonBatterStats = buildSeasonBatterStats(
+      ctx.seasonAggregates.batting.get(currentBatterId),
+    );
+    bvpStats = buildBvpStats(
+      currentBatterId,
+      fieldingPitcherId,
+      ctx.seasonAggregates,
+      ctx.careerBvp,
+    );
+  }
+
   // Post-game: build the high-five line. We replace the regular fielders
   // with the winning team's nine, walking them in from their dugout for a
   // beat and then pulsing a cheer wave down the line. Bookkeeping above
@@ -810,6 +843,8 @@ export const buildScene = (
     homeAbbr: ctx.teamAbbr.get(ctx.input.home.teamId) ?? ctx.input.home.teamId,
     awayAbbr: ctx.teamAbbr.get(ctx.input.away.teamId) ?? ctx.input.away.teamId,
     batterStats,
+    seasonBatterStats,
+    bvpStats,
     pitcherStats,
     onDeckBatterId,
     strikeZone: buildStrikeZone(batter, currentAbPitches),
@@ -822,6 +857,51 @@ export const buildScene = (
     inningTransition,
     victory,
     simTime,
+  };
+};
+
+// Derive the active batter's season top line from their BattingLine. AVG is
+// computed at read time so the SceneState carries primitives only — no
+// references back into /stats. Returns null when the batter has no PAs
+// yet (Day 1 game starts before any stats accumulate).
+const buildSeasonBatterStats = (
+  line: BattingLine | undefined,
+): SeasonBatterStats | null => {
+  if (!line || line.PA === 0) return null;
+  const avg = line.AB > 0 ? line.H / line.AB : 0;
+  return {
+    avg,
+    homeRuns: line.HR,
+    rbi: line.RBI,
+    hits: line.H,
+    atBats: line.AB,
+  };
+};
+
+// Build the all-time matchup line for a (batter, pitcher) pair: the sum
+// of every prior-season matchup row in `careerBvp` plus the current
+// season's matchup row in `seasonAggregates.bvpMatchups`. Returns null
+// if neither source has the pair, or the combined PA count is zero.
+const buildBvpStats = (
+  batterId: PlayerId,
+  pitcherId: PlayerId,
+  seasonAggregates: SeasonAggregates,
+  careerBvp: ReadonlyMap<PlayerId, ReadonlyMap<PlayerId, BvpLine>> | undefined,
+): BvpStats | null => {
+  const career = careerBvp?.get(batterId)?.get(pitcherId);
+  const season = seasonAggregates.bvpMatchups.get(batterId)?.get(pitcherId);
+  if (!career && !season) return null;
+  const PA = (career?.PA ?? 0) + (season?.PA ?? 0);
+  if (PA === 0) return null;
+  return {
+    pitcherId,
+    plateAppearances: PA,
+    atBats: (career?.AB ?? 0) + (season?.AB ?? 0),
+    hits: (career?.H ?? 0) + (season?.H ?? 0),
+    homeRuns: (career?.HR ?? 0) + (season?.HR ?? 0),
+    rbi: (career?.RBI ?? 0) + (season?.RBI ?? 0),
+    walks: (career?.BB ?? 0) + (season?.BB ?? 0),
+    strikeouts: (career?.SO ?? 0) + (season?.SO ?? 0),
   };
 };
 

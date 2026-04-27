@@ -105,6 +105,46 @@ describe('buildLeagueHistory', () => {
     expect(multiSeasonPlayer).not.toBe('');
   });
 
+  it('rolls up career batter-vs-pitcher matchups across seasons', () => {
+    const { league, games: games1 } = playSeasonChunk(0xb5_e7, 3);
+    const { games: games2 } = playSeasonChunk(0xb5_e8, 3);
+    const playerIndex = new Map(league.players.map((p) => [p.id, p]));
+    const agg1 = buildSeasonAggregates(games1, league.teams, league.players, 1);
+    const agg2 = buildSeasonAggregates(games2, league.teams, league.players, 2);
+    const history = buildLeagueHistory({
+      seasons: [
+        { year: 1, agg: agg1, teamGames: 3 },
+        { year: 2, agg: agg2, teamGames: 3 },
+      ],
+      teams: league.teams,
+      playerIndex,
+      retiredPlayers: new Set(),
+    });
+    // Find a (batter, pitcher) pair that appears in BOTH seasons and verify
+    // the career row equals the sum of the two season rows.
+    let verified = false;
+    for (const [batterId, inner1] of agg1.bvpMatchups) {
+      const inner2 = agg2.bvpMatchups.get(batterId);
+      if (!inner2) continue;
+      for (const [pitcherId, line1] of inner1) {
+        const line2 = inner2.get(pitcherId);
+        if (!line2) continue;
+        const career = history.careerBvp.get(batterId)?.get(pitcherId);
+        expect(career).toBeDefined();
+        if (career) {
+          expect(career.PA).toBe(line1.PA + line2.PA);
+          expect(career.AB).toBe(line1.AB + line2.AB);
+          expect(career.H).toBe(line1.H + line2.H);
+          expect(career.HR).toBe(line1.HR + line2.HR);
+          verified = true;
+        }
+        break;
+      }
+      if (verified) break;
+    }
+    expect(verified).toBe(true);
+  });
+
   it('inducts only retired players who clear the threshold', () => {
     const { league, games } = playSeasonChunk(0xb5_e9, 4);
     const agg = buildSeasonAggregates(games, league.teams, league.players, 1);

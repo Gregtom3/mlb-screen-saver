@@ -4,6 +4,15 @@ import type { Player, Team } from '../world/types.js';
 // the caller can drop it inline. Uses player.id as the seed so the same
 // player always renders identically.
 
+// Structural team-color hint. The portrait only needs the three team color
+// hexes; callers in the canvas HUD don't always have a full Team handy
+// (HudExtras carries colors-only records), so accept either a real Team or
+// just the colors slot.
+type PortraitTeamHint =
+  | Team
+  | { readonly colors: { readonly primary: string; readonly secondary: string; readonly accent: string } }
+  | undefined;
+
 const fnv = (s: string): number => {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
@@ -31,7 +40,7 @@ const HAIR_COLORS = ['#1c1410', '#3a2515', '#6a4225', '#a67238', '#d6b06a', '#7e
 export const drawPortrait = (
   ctx: CanvasRenderingContext2D,
   player: Player,
-  team: Team | undefined,
+  team: PortraitTeamHint,
   size = 64,
 ): void => {
   const rng = new Mulberry(fnv(player.id));
@@ -108,7 +117,7 @@ export const drawPortrait = (
   ctx.imageSmoothingEnabled = false;
 };
 
-export const portraitDataUrl = (player: Player, team: Team | undefined, size = 64): string => {
+export const portraitDataUrl = (player: Player, team: PortraitTeamHint, size = 64): string => {
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;

@@ -4,6 +4,7 @@ import { buildLeagueHistory, type LeagueHistory } from '../season/history.js';
 import { runGame } from '../sim/index.js';
 import type { GameInput, SideInput, SimEvent } from '../sim/types.js';
 import type { Player, PlayerId, Stadium, Team, TeamId } from '../world/types.js';
+import type { BvpLine } from '../stats/types.js';
 import {
   createRenderLoop,
   DEFAULT_TICKS_PER_SECOND,
@@ -145,11 +146,17 @@ const buildGameInput = (
   return { input, home, away, stadium };
 };
 
+interface SceneCtxExtras {
+  readonly seasonAggregates?: SeasonAggregates;
+  readonly careerBvp?: ReadonlyMap<PlayerId, ReadonlyMap<PlayerId, BvpLine>>;
+}
+
 const buildSceneCtxFor = (
   league: ReturnType<typeof generateInitialLeague>,
   input: GameInput,
   homeTeam: Team,
   stadium: Stadium,
+  extras: SceneCtxExtras = {},
 ): SceneContext => {
   const teamColors = new Map(
     league.teams.map((t) => [t.id, { primary: t.colors.primary, secondary: t.colors.secondary, accent: t.colors.accent }]),
@@ -175,6 +182,8 @@ const buildSceneCtxFor = (
     skyColor,
     stadium,
     homeTeamPrimary: homeTeam.colors.primary,
+    ...(extras.seasonAggregates ? { seasonAggregates: extras.seasonAggregates } : {}),
+    ...(extras.careerBvp ? { careerBvp: extras.careerBvp } : {}),
   };
 };
 
@@ -319,10 +328,21 @@ const main = () => {
     console.error(`No games on day ${LIVE_DAY}`);
     return;
   }
-  const liveGames: LiveGame[] = liveDayEntries.map((entry) => {
+  // Two-phase build: simulate every live game first (we need their finished
+  // events to roll into aggregatesWithLive + careerBvp), then build per-game
+  // SceneContexts once those aggregates exist. The render loop's batter card
+  // reads season AVG/HR/RBI and BvP off SceneContext, so the context
+  // wouldn't be useful built earlier.
+  interface LiveGameSeed {
+    readonly entry: { gameId: string; homeTeamId: TeamId; awayTeamId: TeamId };
+    readonly input: GameInput;
+    readonly home: Team;
+    readonly stadium: Stadium;
+    readonly events: readonly SimEvent[];
+  }
+  const liveGameSeeds: LiveGameSeed[] = liveDayEntries.map((entry) => {
     const { input, home, stadium } = buildGameInput(league, entry, SEED);
     const events = runGame(input);
-    const sceneCtx = buildSceneCtxFor(league, input, home, stadium);
     gameMetadata.set(entry.gameId, {
       gameId: entry.gameId,
       day: entry.day,
@@ -332,21 +352,23 @@ const main = () => {
       awayStartingPitcher: input.away.startingPitcherId,
     });
     return {
-      events,
-      sceneCtx,
       entry: {
         gameId: entry.gameId,
         homeTeamId: entry.homeTeamId,
         awayTeamId: entry.awayTeamId,
       },
-    } satisfies LiveGame;
+      input,
+      home,
+      stadium,
+      events,
+    };
   });
 
   // Aggregate live-day finals too so the menu's leaderboards reflect them.
   // Live tiles use the timelines for sparklines.
-  const liveFinishedGames: FinishedGame[] = liveGames.map((g) => ({
+  const liveFinishedGames: FinishedGame[] = liveGameSeeds.map((g) => ({
     events: g.events as readonly SimEvent[],
-    input: g.sceneCtx.input,
+    input: g.input,
     day: LIVE_DAY,
   }));
   // Re-build aggregates including live finals (cheap; <1ms for 8 games).
@@ -356,6 +378,36 @@ const main = () => {
     league.players,
     league.season.year,
   );
+
+  // Build LeagueHistory now (was below) so each live game's SceneContext
+  // can carry the careerBvp map for the HUD batter card. The retired-set
+  // stays empty until aging/retirement ships; HoF trips automatically once
+  // it's populated.
+  const playerIndex = new Map<PlayerId, Player>(league.players.map((p) => [p.id, p]));
+  const stadiumIndex = new Map(league.stadiums.map((s) => [s.id, s]));
+  const teamGamesPlayed = LIVE_DAY;
+  const history: LeagueHistory = buildLeagueHistory({
+    seasons: priorSummaries,
+    teams: league.teams,
+    playerIndex,
+    retiredPlayers: new Set(),
+  });
+
+  // Phase 2 of the live-game build: now that aggregatesWithLive and history
+  // exist, mint a SceneContext per game wired to both. The HUD batter card
+  // pulls season AVG/HR/RBI from `aggregatesWithLive` and "vs PITCHER"
+  // matchup totals from a combination of that map plus history.careerBvp.
+  const liveGames: LiveGame[] = liveGameSeeds.map((seed) => {
+    const sceneCtx = buildSceneCtxFor(league, seed.input, seed.home, seed.stadium, {
+      seasonAggregates: aggregatesWithLive,
+      careerBvp: history.careerBvp,
+    });
+    return {
+      events: seed.events,
+      sceneCtx,
+      entry: seed.entry,
+    } satisfies LiveGame;
+  });
 
   let selectedIdx = Math.max(0, Math.min(liveGames.length - 1, INITIAL_GAME));
 
@@ -422,19 +474,9 @@ const main = () => {
   prevChannelBtn?.addEventListener('click', () => switchChannel(-1));
   nextChannelBtn?.addEventListener('click', () => switchChannel(+1));
 
-  // ---- Stats menu (phase 5.5).
-  const playerIndex = new Map<PlayerId, Player>(league.players.map((p) => [p.id, p]));
-  const stadiumIndex = new Map(league.stadiums.map((s) => [s.id, s]));
-  const teamGamesPlayed = LIVE_DAY; // history days + live day, all complete
-
-  // Phase 6: build the LeagueHistory once. Retired set stays empty until we
-  // ship aging/retirement; HoF then trips automatically when it's populated.
-  const history: LeagueHistory = buildLeagueHistory({
-    seasons: priorSummaries,
-    teams: league.teams,
-    playerIndex,
-    retiredPlayers: new Set(),
-  });
+  // ---- Stats menu (phase 5.5). playerIndex / stadiumIndex / teamGamesPlayed
+  // and the LeagueHistory itself were built above so each live game's
+  // SceneContext could carry career BvP data into the HUD.
 
   // Lazy projections — single cached set per session.
   let projectionsCache: ProjectionSet | null = null;
