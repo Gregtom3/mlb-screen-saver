@@ -48,6 +48,12 @@ import {
 // longer, so the eye can actually track each ball.
 const BALL_TIME_SCALE = 3;
 const PITCH_FLIGHT_TICKS = 4 * BALL_TIME_SCALE;        // mound→plate ball flight
+// After a non-in-play pitch, the catcher cradles the ball for a beat and then
+// lobs it back to the mound. Sized so the ball settles before the next pitch
+// fires (TIME_PITCH=25 sim ticks; PITCH_FLIGHT_TICKS + CATCHER_HOLD_TICKS +
+// CATCHER_LOB_TICKS = 22, leaving a small idle pause at the mound).
+const CATCHER_HOLD_TICKS = 3;
+const CATCHER_LOB_TICKS = 7;
 const RUNNER_TRAVEL_TICKS_PER_BASE = 7; // ~7 sim sec/base — pleasant screensaver pace, slower than real-time
 // Grounders need a small extra rolling tail for readability.
 const GROUNDER_EXTRA_TICKS = 0.5 * BALL_TIME_SCALE;
@@ -597,12 +603,38 @@ export const buildScene = (
     }
   } else if (lastPitch) {
     const elapsed = simTime - lastPitch.t;
-    const frac = Math.max(0, Math.min(1, elapsed / PITCH_FLIGHT_TICKS));
-    ballPos = lerpPoint(PITCHERS_MOUND, HOME_PLATE, frac);
-    // A pitch arcs slightly. Peak ~6 ft mid-flight.
-    ballHeight = 6 * Math.sin(frac * Math.PI);
-    ballVisible = true;
-    ballInFlight = frac > 0 && frac < 1;
+    if (elapsed <= PITCH_FLIGHT_TICKS) {
+      const frac = Math.max(0, Math.min(1, elapsed / PITCH_FLIGHT_TICKS));
+      ballPos = lerpPoint(PITCHERS_MOUND, HOME_PLATE, frac);
+      // A pitch arcs slightly. Peak ~6 ft mid-flight.
+      ballHeight = 6 * Math.sin(frac * Math.PI);
+      ballVisible = true;
+      ballInFlight = frac > 0 && frac < 1;
+    } else {
+      // Catcher cradles, then lobs the ball back to the mound. Skipped when
+      // a contact choreo is active (handled by the branch above) — only
+      // takes/balls/strikes/HBP land here.
+      const catcherPos = FIELDER_HOME_POSITIONS.C;
+      const holdElapsed = elapsed - PITCH_FLIGHT_TICKS;
+      if (holdElapsed <= CATCHER_HOLD_TICKS) {
+        ballPos = catcherPos;
+        ballHeight = 0;
+        ballVisible = true;
+        ballInFlight = false;
+      } else if (holdElapsed <= CATCHER_HOLD_TICKS + CATCHER_LOB_TICKS) {
+        const frac = (holdElapsed - CATCHER_HOLD_TICKS) / CATCHER_LOB_TICKS;
+        ballPos = lerpPoint(catcherPos, PITCHERS_MOUND, frac);
+        // Low, gentle arc — peak ~5 ft so it reads as a relaxed lob.
+        ballHeight = 5 * Math.sin(frac * Math.PI);
+        ballVisible = true;
+        ballInFlight = true;
+      } else {
+        ballPos = PITCHERS_MOUND;
+        ballHeight = 0;
+        ballVisible = true;
+        ballInFlight = false;
+      }
+    }
   }
 
   // HUD aggregates — derived from the same event prefix so the line score,

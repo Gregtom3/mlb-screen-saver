@@ -150,25 +150,30 @@ const buildSceneCtxFor = (
 };
 
 const setupAudioToggle = (sfx: { setEnabled(b: boolean): void; isEnabled(): boolean }) => {
-  // Default the screensaver to muted per project brief — sound is opt-in. The
-  // first toggle click both unlocks the AudioContext (which requires a user
-  // gesture) and unmutes; subsequent clicks just flip mute on the bus.
-  setMuted(true);
+  // Audio is on by default. Browsers gate AudioContext construction on a user
+  // gesture, so we register one-shot listeners that unlock on the first
+  // pointer/key event anywhere on the page; the toggle button stays as a
+  // manual mute control.
   const btn = document.getElementById('audio-toggle') as HTMLButtonElement | null;
-  if (!btn) return;
   const refreshLabel = () => {
-    btn.textContent = isMuted() ? '🔇 audio' : '🔊 audio';
+    if (btn) btn.textContent = isMuted() ? '🔇 audio' : '🔊 audio';
   };
   refreshLabel();
+
+  const unlock = () => {
+    if (sfx.isEnabled()) return;
+    ensureAudio();
+    sfx.setEnabled(true);
+    refreshLabel();
+    document.removeEventListener('pointerdown', unlock);
+    document.removeEventListener('keydown', unlock);
+  };
+  document.addEventListener('pointerdown', unlock);
+  document.addEventListener('keydown', unlock);
+
+  if (!btn) return;
   btn.addEventListener('click', () => {
-    if (!sfx.isEnabled()) {
-      // First click — unlock the AudioContext and switch on dispatch.
-      ensureAudio();
-      setMuted(false);
-      sfx.setEnabled(true);
-    } else {
-      setMuted(!isMuted());
-    }
+    setMuted(!isMuted());
     refreshLabel();
   });
 };
