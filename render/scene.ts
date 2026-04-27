@@ -61,14 +61,26 @@ import {
 // returns to z=0 at frac=1 — but the visual flight takes proportionally
 // longer, so the eye can actually track each ball.
 const BALL_TIME_SCALE = 3;
-const PITCH_FLIGHT_TICKS = 4 * BALL_TIME_SCALE;        // mound→plate ball flight
+// Pitches get a snappier visual than the old 4× tick budget — a real
+// fastball arrives in well under a second, and the prior 12-tick flight
+// (~0.6s wall-clock at 20 ticks/sec) read as a lazy lob. Halve it.
+const PITCH_FLIGHT_TICKS = 2 * BALL_TIME_SCALE;        // mound→plate ball flight
 // After a non-in-play pitch, the catcher cradles the ball for a beat and then
-// lobs it back to the mound. Sized so the ball settles before the next pitch
-// fires (TIME_PITCH=25 sim ticks; PITCH_FLIGHT_TICKS + CATCHER_HOLD_TICKS +
-// CATCHER_LOB_TICKS = 22, leaving a small idle pause at the mound).
+// lobs it back to the mound. The lob is intentionally lazy — it reads as the
+// pitcher and catcher resetting between pitches rather than a real throw.
 const CATCHER_HOLD_TICKS = 3;
-const CATCHER_LOB_TICKS = 7;
+// Tripled vs. the original 7-tick lob: the slow arc gives the eye time to
+// settle and sells the "between-pitch reset" beat.
+const CATCHER_LOB_TICKS = 21;
 const RUNNER_TRAVEL_TICKS_PER_BASE = 7; // ~7 sim sec/base — pleasant screensaver pace, slower than real-time
+// On-deck batter pacing during the gap between at-bats. The 25-tick gap
+// between atBatEnd and the next pitch breaks down as: a settle window
+// (previous play finishes, walk-up jingle leads in), then a slow walk
+// from the on-deck circle to the batter's box. Tuned generous so the
+// hand-off reads — the user specifically wants this slower than feels
+// natural.
+const ON_DECK_SETTLE_TICKS = 6;
+const ON_DECK_WALK_TO_BOX_TICKS = 18;
 // Grounders need a small extra rolling tail for readability.
 const GROUNDER_EXTRA_TICKS = 0.5 * BALL_TIME_SCALE;
 
@@ -183,6 +195,11 @@ interface SceneContext {
   // Optional away-team primary color — used by the dugout trim layer to
   // tint the 3B-side (away) dugout's roof rim.
   readonly awayTeamPrimary?: string;
+  // Optional predicate identifying "star" batters. The renderer's anim-cue
+  // computation reads this to scale walk-up jingle intensity + duration.
+  // Pure stand-in for the /ambience StarSet; we keep the type minimal here
+  // so /render doesn't depend on /ambience.
+  readonly isStarBatter?: (playerId: PlayerId) => boolean;
   // Season aggregates for the year. When provided, the scene reducer
   // surfaces the active batter's season top line (AVG/HR/RBI) and adds
   // any current-season vs-this-pitcher matchup line into the HUD's BvP
@@ -506,6 +523,11 @@ export const buildScene = (
     // the dugout direction even after `half` flips on inningEnd.
     readonly battingSide: 'home' | 'away';
   } | null = null;
+  // Most recent atBatEnd we've consumed. Cleared on the next pitch event,
+  // so `lastAtBatEndT !== null` (combined with no newer pitch) means we're
+  // in the dead time between at-bats — the window during which the on-deck
+  // batter slow-walks from the on-deck circle to the batter's box.
+  let lastAtBatEndT: number | null = null;
   // Most recent strikeout with empty bases. Drives the around-the-horn
   // throw choreography: catcher → 3B → SS → 2B → P, fired ~50% of the time.
   let lastStrikeoutAroundTheHorn: {
@@ -554,6 +576,9 @@ export const buildScene = (
         // triggers an outgoing-walk only if this batter never reaches base.
         if (ev.batterId !== currentBatterId) currentBatterRanOut = false;
         currentBatterId = ev.batterId;
+        // Any pitch event closes the inter-at-bat dead time (the on-deck
+        // batter has reached the box; the at-bat is live).
+        lastAtBatEndT = null;
         const r = ev.pitch.result;
         if (r === 'ball') balls += 1;
         else if (r === 'called-strike' || r === 'swinging-strike') strikes += 1;
@@ -693,6 +718,9 @@ export const buildScene = (
         }
         // Reset the ran-out flag — a new batter steps in at the next pitch.
         currentBatterRanOut = false;
+        // Mark the gap between at-bats so the on-deck batter's slow walk
+        // to the box (and the buffered walk-up jingle) can anchor to it.
+        lastAtBatEndT = ev.t;
         break;
       }
       case 'sub': {
@@ -719,6 +747,7 @@ export const buildScene = (
         lastThirdStrikePitchT = null;
         currentBatterId = null;
         currentBatterRanOut = false;
+        lastAtBatEndT = null;
         // Capture the side that was just fielding so the walk-on phase can
         // still draw them retreating to their dugout while the new fielders
         // jog out.
@@ -911,8 +940,13 @@ export const buildScene = (
   // bat in ready stance.
   const batterIsRunner = currentBatterId !== null && runnerLatest.has(currentBatterId);
   const fieldIsClearOfBatter = inningTransition !== null || gameEnd !== null;
+  // During the dead time between at-bats, the just-finished batter is
+  // either being drawn as `outgoingBatter` (slow walk to dugout) or has
+  // already left as a runner. The on-deck batter is mid-walk to the box.
+  // Either way, the active batter slot is empty until the next pitch fires.
+  const inAtBatGap = lastAtBatEndT !== null;
   let batterScene: ScenePlayer | null = null;
-  if (batter && phase === 'live' && !batterIsRunner && !fieldIsClearOfBatter) {
+  if (batter && phase === 'live' && !batterIsRunner && !fieldIsClearOfBatter && !inAtBatGap) {
     const boxX = batter.bats === 'L' ? 4.5 : -4.5;
     let swingFrac = 0;
     if (lastPitch && lastPitch.wasSwing) {
@@ -1262,13 +1296,36 @@ export const buildScene = (
       const phaseOff = idHash01(onDeckBatterId) * Math.PI * 2;
       const cyc = (simTime * 0.18 + phaseOff) % (Math.PI * 2);
       const tri = cyc < Math.PI ? cyc / Math.PI : 0; // half-cycle swings
+      // Position: at the on-deck circle by default, but during the gap
+      // between at-bats the on-deck batter slow-walks toward the box so
+      // they're already at the plate when the next pitch fires. The walk
+      // is intentionally slow — the user wants the eye to register the
+      // hand-off cleanly. We delay the start of the walk by ON_DECK_SETTLE
+      // ticks so the previous play has time to clear and the walk-up
+      // jingle gets to lead in with a beat of pre-roll.
+      const circle = onDeckCircleForSide(battingSide);
+      const boxX = onDeckPlayer.bats === 'L' ? 4.5 : -4.5;
+      const boxPos = { x: boxX, y: 2.5 };
+      let pos = circle;
+      let swingFrac = tri;
+      if (
+        lastAtBatEndT !== null &&
+        simTime > lastAtBatEndT + ON_DECK_SETTLE_TICKS
+      ) {
+        const elapsed = simTime - lastAtBatEndT - ON_DECK_SETTLE_TICKS;
+        const frac = Math.min(1, elapsed / ON_DECK_WALK_TO_BOX_TICKS);
+        pos = lerpPoint(circle, boxPos, easeInOut(frac));
+        // Once they're walking, dampen the warmup swing so they look like
+        // they're heading to work, not still loose in the on-deck circle.
+        swingFrac = tri * (1 - frac);
+      }
       onDeckBatterScene = {
         id: onDeckPlayer.id,
         role: 'on-deck',
-        position: onDeckCircleForSide(battingSide),
+        position: pos,
         primaryColor: battingColors.primary,
         secondaryColor: battingColors.secondary,
-        swingFrac: tri,
+        swingFrac,
         heightScale: scaleFromHeight(onDeckPlayer.heightFt),
       };
     }

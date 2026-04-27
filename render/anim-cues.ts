@@ -22,7 +22,9 @@ import type { SimEvent } from '../sim/types.js';
 // sound will desync from the visuals.
 // =========================================================================
 
-const PITCH_FLIGHT_TICKS = 12;
+// Must mirror scene.ts's PITCH_FLIGHT_TICKS so around-the-horn cues line
+// up with the third-strike pitch landing in the catcher's mitt.
+const PITCH_FLIGHT_TICKS = 6;
 const HORN_CATCHER_HOLD = 5;
 const HORN_THROW_TICKS = 7;
 const HORN_LOB_TICKS = 9;
@@ -31,6 +33,16 @@ const HORN_BAG_HOLD = 3;
 const TOSS_FLIGHT_TICKS = 8;
 const TOSS_HOLD_TICKS = 4;
 const INNING_WALK_OFF_TICKS = 18;
+
+// Walk-up-jingle pacing — anchored to the *previous* atBatEnd plus a
+// settle window, NOT the new batter's first pitch. The song should kick
+// in once the prior play has cleared (runners settled, ball returned to
+// the pitcher) and lead the new batter into the box. Lifting it forward
+// also means the jingle ends roughly when the first pitch fires, so the
+// existing audio-side `stopWalkup()` on `pitch` cleanly fades it out.
+const WALKUP_DELAY_AFTER_ATBATEND_TICKS = 8;  // settle window
+const WALKUP_DELAY_AFTER_HALFSTART_TICKS = 6; // first batter of a half
+const WALKUP_DURATION_MS_BASE = 3200;
 
 // Same FNV-1a-flavored hash used in scene.ts. Duplicated so this module can
 // stay independent of the scene reducer (scene.ts is large and importing
@@ -105,8 +117,10 @@ const buildInningEndTossCues = (
 
 export const computeAnimAudioCues = (
   events: readonly SimEvent[],
+  options: { readonly isStarBatter?: (playerId: string) => boolean } = {},
 ): readonly AnimAudioCue[] => {
   const cues: AnimAudioCue[] = [];
+  const isStarBatter = options.isStarBatter ?? (() => false);
   // Walk events building up state, generating cues at each atBatEnd /
   // inningEnd that warrants animation.
   let bases = { first: false, second: false, third: false };
@@ -117,9 +131,20 @@ export const computeAnimAudioCues = (
   // and inning-end tossing in one place.
   let lastThirdOutT: number | null = null;
   let strikes = 0;
+  // Walk-up scheduling: when the previous at-bat ended (or a new half
+  // started), record the anchor `t` so we can emit a walkup-start cue at
+  // the *next* pitch event (when we learn which batter is stepping in).
+  // We also skip emitting one for the same batter twice — pitch 2 of an
+  // at-bat doesn't get a fresh jingle.
+  let pendingWalkupAnchorT: number | null = 0; // gameStart-like default
+  let walkupBatterId: string | null = null;
 
   for (const ev of events) {
     switch (ev.kind) {
+      case 'gameStart': {
+        pendingWalkupAnchorT = ev.t;
+        break;
+      }
       case 'pitch': {
         const r = ev.pitch.result;
         if (r === 'called-strike' || r === 'swinging-strike') strikes += 1;
@@ -130,6 +155,35 @@ export const computeAnimAudioCues = (
           strikes === 3
         ) {
           lastThirdStrikePitchT = ev.t;
+        }
+        // Walk-up jingle cue: fires once per new batter, anchored to the
+        // post-play settle moment from the prior atBatEnd (or game/inning
+        // start). The cue's t deliberately precedes ev.t so the song leads
+        // the new batter into the box.
+        if (pendingWalkupAnchorT !== null && walkupBatterId !== ev.batterId) {
+          const anchor = pendingWalkupAnchorT;
+          const isFirst = anchor <= 0 || anchor === ev.t; // sketchy but cheap
+          const delay = isFirst
+            ? WALKUP_DELAY_AFTER_HALFSTART_TICKS
+            : WALKUP_DELAY_AFTER_ATBATEND_TICKS;
+          // Anchor + delay places the cue inside the dead time, before the
+          // pitch fires (which is when audio's stopWalkup will fade it).
+          let walkupT = anchor + delay;
+          // Never push the cue past the pitch — if we did, audio's pitch-
+          // event stopWalkup would fire before the song even starts.
+          if (walkupT >= ev.t) walkupT = Math.max(anchor, ev.t - 1);
+          const isStar = isStarBatter(ev.batterId);
+          cues.push({
+            t: walkupT,
+            kind: 'walkup-start',
+            playerId: ev.batterId,
+            intensity: isStar ? 0.95 : 0.55,
+            durationMs: isStar
+              ? WALKUP_DURATION_MS_BASE + 1300
+              : WALKUP_DURATION_MS_BASE,
+          });
+          walkupBatterId = ev.batterId;
+          pendingWalkupAnchorT = null;
         }
         break;
       }
@@ -165,6 +219,11 @@ export const computeAnimAudioCues = (
         }
         // Reset strike count for the next batter.
         strikes = 0;
+        // Anchor the next batter's walk-up song to this atBatEnd, so the
+        // song starts AFTER the play settles (not at the next pitch). The
+        // cue itself is emitted on the next pitch event when we learn the
+        // new batter's id.
+        pendingWalkupAnchorT = ev.t;
         break;
       }
       case 'inningEnd': {
@@ -176,6 +235,10 @@ export const computeAnimAudioCues = (
         lastThirdStrikePitchT = null;
         lastThirdOutT = null;
         strikes = 0;
+        // Lead-off batter of the next half: the inningEnd marks the start
+        // of the dead time before their first pitch.
+        pendingWalkupAnchorT = ev.t;
+        walkupBatterId = null;
         break;
       }
     }

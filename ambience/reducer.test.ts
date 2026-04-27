@@ -122,7 +122,11 @@ describe('createAmbienceReducer', () => {
     expect(bot.some((p) => p.kind === 'cheer')).toBe(false);
   });
 
-  it('emits a walkup-start exactly once per new batter', () => {
+  it('does not emit walkup-start pulses (handled by /render anim cues)', () => {
+    // Walk-up jingle scheduling moved to /render/anim-cues so it can lead
+    // in *after* the prior play settles (rather than at the first pitch,
+    // which steps on runner motion + post-contact ball flight). The
+    // reducer is free of walkup pulses now.
     const r = createAmbienceReducer(baseInit);
     const { pulses } = r.step(
       [
@@ -133,8 +137,8 @@ describe('createAmbienceReducer', () => {
       ],
       0.1,
     );
-    const walkups = pulses.filter((p) => p.kind === 'walkup-start' && p.playerId === 'b1');
-    expect(walkups.length).toBe(1);
+    const walkups = pulses.filter((p) => p.kind === 'walkup-start');
+    expect(walkups.length).toBe(0);
   });
 
   it('arms a two-strike-clap once when home is pitching, then disarms', () => {

@@ -46,7 +46,19 @@ export type AnimAudioCue =
   | { readonly t: number; readonly kind: 'toss-mitt' }
   // A throw releasing — light whoosh; layered under the catch so the eye/
   // ear locks onto the catch frame.
-  | { readonly t: number; readonly kind: 'toss-throw' };
+  | { readonly t: number; readonly kind: 'toss-throw' }
+  // Walk-up jingle for the batter just stepping in. Anchored to the
+  // post-play-settle moment (not the first pitch) so the song doesn't
+  // step on the previous play's runners + ball flight. The renderer
+  // owns the timing because the choreo settle window (post-contact,
+  // around-the-horn, etc.) varies per play.
+  | {
+      readonly t: number;
+      readonly kind: 'walkup-start';
+      readonly playerId: string;
+      readonly intensity: number;
+      readonly durationMs: number;
+    };
 
 export interface AmbienceTick {
   readonly state: CrowdState;
@@ -169,6 +181,13 @@ export const createSfxDispatcher = (): SfxDispatcher => {
             break;
           case 'toss-mitt':
             catcherMittPop();
+            break;
+          case 'walkup-start':
+            startWalkup({
+              playerId: c.playerId,
+              intensity: c.intensity,
+              durationMs: c.durationMs,
+            });
             break;
         }
       }
