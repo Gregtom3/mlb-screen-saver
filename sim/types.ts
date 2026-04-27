@@ -9,6 +9,7 @@ import type {
   StadiumId,
   GameId,
   StadiumQuirk,
+  StadiumDimensions,
 } from '../world/types.js';
 
 export type Side = 'home' | 'away';
@@ -170,7 +171,15 @@ export interface GameInput {
   readonly seed: number;
   // Per-park flavor that modulates sim outcomes (Phase 4). The renderer
   // already reads stadium dimensions and atmosphere; this is the hook for
-  // quirks that *change the game itself* — short-porch HR boosts, altitude
-  // thin-air, wind-tunnel direction, deep CF.
+  // quirks that *change the game itself* — altitude thin-air, wind-tunnel
+  // direction. Short-porch and deep-center HR effects are now emergent
+  // from `stadiumDimensions` below, not from this multiplier.
   readonly stadiumQuirk?: StadiumQuirk;
+  // Per-park fence geometry (Phase 5). When provided, simulateInPlay
+  // gates rolled home-run outcomes against the actual wall distance at
+  // the contact's spray angle: HR-shaped trajectories that fall short of
+  // the wall are downgraded to wall-ball doubles or wall-saving flyouts.
+  // Optional so callers without a Stadium record (legacy tests, ad-hoc
+  // fixtures) keep working — absence falls back to no geometric filter.
+  readonly stadiumDimensions?: StadiumDimensions;
 }

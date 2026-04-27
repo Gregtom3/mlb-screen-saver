@@ -31,12 +31,12 @@ export const adjustmentsFor = (quirk: StadiumQuirk | undefined): QuirkAdjustment
   if (!quirk) return NEUTRAL_ADJUSTMENTS;
   switch (quirk.kind) {
     case 'short-porch': {
-      // A short porch puts more flies into the seats on that side. The
-      // outcome roll is direction-agnostic in our sim, so we model the
-      // *overall* HR uptick — empirically about +10% across the league.
-      // Distance-aware boost: shorter porch = bigger effect.
-      const distAdj = Math.max(0, (320 - quirk.distanceFt) / 320); // 0..1
-      return { hrRateMul: 1.08 + distAdj * 0.18, doubleRateMul: 1.05, tripleRateMul: 1.0 };
+      // Phase 5: short-porch HR uptick is now emergent — the geometry filter
+      // in simulateInPlay clears would-be HRs against the actual fence, so
+      // a 308-ft porch naturally produces more HRs without any rate bump
+      // here. We still leave a small doubles bump to model the off-the-wall
+      // ricochet that a short porch's high wall produces.
+      return { hrRateMul: 1.0, doubleRateMul: 1.05, tripleRateMul: 1.0 };
     }
     case 'altitude-thin-air': {
       // Thinner air = the ball flies further. Coors-style ~+15% HRs.
@@ -58,14 +58,16 @@ export const adjustmentsFor = (quirk: StadiumQuirk | undefined): QuirkAdjustment
       return NEUTRAL_ADJUSTMENTS;
     }
     case 'deep-center': {
-      // Deep CF turns would-be HRs into outs / triples. Baseline 410 ft;
-      // each foot deeper drops HR rate slightly.
+      // Phase 5: deep-CF HR suppression is now emergent — the geometry
+      // filter in simulateInPlay catches HR-shaped trajectories that fall
+      // short of a 425-ft fence. We keep the small triple-rate bump because
+      // deep gaps still reward speed independent of the HR-vs-flyout split.
       const beyondBaseline = Math.max(0, quirk.distanceFt - 410); // 0..30 typical
-      const cut = Math.min(0.18, beyondBaseline * 0.005);
+      const tripleBonus = Math.min(0.09, beyondBaseline * 0.0025);
       return {
-        hrRateMul: 1.0 - cut,
+        hrRateMul: 1.0,
         doubleRateMul: 1.0,
-        tripleRateMul: 1.0 + cut * 0.5, // some HRs become triples instead
+        tripleRateMul: 1.0 + tripleBonus,
       };
     }
     case 'ivy-wall':

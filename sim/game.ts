@@ -12,7 +12,8 @@ import type {
   SimEvent,
 } from './types.js';
 import { adjustmentsFor, type QuirkAdjustments } from './stadium-effects.js';
-import type { StadiumQuirk } from '../world/types.js';
+import type { StadiumQuirk, StadiumDimensions } from '../world/types.js';
+import { wallDistanceAtAngle } from '../world/stadium-geometry.js';
 
 // =========================================================================
 // Phase 1 pitch-by-pitch sim.
@@ -426,6 +427,7 @@ const simulateInPlay = (
   bases: BasesState,
   rng: PRNG,
   quirk: StadiumQuirk | undefined,
+  dimensions: StadiumDimensions | undefined,
   highLeverage: boolean,
   locationZone: number,
 ): InPlayResult => {
@@ -466,9 +468,12 @@ const simulateInPlay = (
   // grid is one input among many, not a dominator.
   const xBAMult = xBAMultFor(batter, locationZone);
   const xBABoost = (xBAMult - 1) * 0.6; // -0.18..+0.18 from typical xBA span
+  // Base HR rate bumped 0.040 → 0.043 (Phase 5) to absorb the ~5-8% of
+  // rolled HRs the fence-aware filter downgrades to wall-balls in average
+  // parks. Without this bump, league-wide HR/G would visibly drift down.
   const hrRate = Math.max(
     0.005,
-    (0.04 + power * 0.0018 - cmd * 0.0008 - gb * 0.0006 - stuff * 0.0004 + leverageNet) *
+    (0.043 + power * 0.0018 - cmd * 0.0008 - gb * 0.0006 - stuff * 0.0004 + leverageNet) *
       adj.hrRateMul *
       (1 + xBABoost),
   );
@@ -537,6 +542,37 @@ const simulateInPlay = (
   }
 
   const ballPath = buildBallPath(outcome, batter, pitcher, pitchCount, rng);
+
+  // Fence-aware HR check (Phase 5). When dimensions are provided, validate
+  // that a rolled home-run trajectory actually clears the wall at its spray
+  // angle. The "effective" wall distance bumps the raw fence by 1.5 ft per
+  // foot of wall height — a rough physics shortcut so a tall wall (Sapwood,
+  // Beacon Field) can still rob what would otherwise be a HR.
+  //
+  // Downgrade rule (per the planning answer "Mixed by trajectory"):
+  //   - High launch angle near the wall → wall-saving flyout (caught at the
+  //     warning track).
+  //   - Low rope or short of the wall   → wall-ball double.
+  //
+  // The BallPath itself is preserved so the renderer plays the same high
+  // trajectory; the choreo treats it as the new outcome.
+  if (outcome === 'home-run' && dimensions) {
+    const sprayDeg =
+      (Math.atan2(ballPath.landingX, Math.max(1, ballPath.landingY)) * 180) /
+      Math.PI;
+    const landingDist = Math.hypot(ballPath.landingX, ballPath.landingY);
+    const wallDist = wallDistanceAtAngle(dimensions, sprayDeg);
+    const effectiveWall = wallDist + dimensions.wallHeightFt * 1.5;
+    if (landingDist < effectiveWall) {
+      const nearWall = landingDist >= effectiveWall - 30;
+      if (ballPath.launchAngleDeg > 28 && nearWall) {
+        outcome = 'flyout';
+      } else {
+        outcome = 'double';
+      }
+    }
+  }
+
   return { outcome, ballPath };
 };
 
@@ -750,6 +786,7 @@ const simulateAtBat = (
   rng: PRNG,
   playerIndex: ReadonlyMap<PlayerId, Player>,
   stadiumQuirk: StadiumQuirk | undefined,
+  stadiumDimensions: StadiumDimensions | undefined,
 ): AtBatResult => {
   const fieldingSide_ = fieldingSide(state);
   const battingSide_ = battingSide(state);
@@ -825,6 +862,7 @@ const simulateAtBat = (
           state.bases,
           rng,
           stadiumQuirk,
+          stadiumDimensions,
           highLeverage,
           po.locationZone,
         );
@@ -926,11 +964,12 @@ const playHalfInning = (
   rng: PRNG,
   playerIndex: ReadonlyMap<PlayerId, Player>,
   stadiumQuirk: StadiumQuirk | undefined,
+  stadiumDimensions: StadiumDimensions | undefined,
 ): void => {
   state.outs = 0;
   state.bases = { first: null, second: null, third: null };
   while (state.outs < 3) {
-    const result = simulateAtBat(state, rng, playerIndex, stadiumQuirk);
+    const result = simulateAtBat(state, rng, playerIndex, stadiumQuirk, stadiumDimensions);
     state.outs += result.outsAdded;
     state.bases = result.newBases;
     if (state.outs >= 3) break;
@@ -972,12 +1011,12 @@ export const runGame = (input: GameInput): readonly SimEvent[] => {
   // Top + bottom of innings 1..9, plus extras until decided.
   while (true) {
     state.half = 'top';
-    playHalfInning(state, rng, input.playerIndex, input.stadiumQuirk);
+    playHalfInning(state, rng, input.playerIndex, input.stadiumQuirk, input.stadiumDimensions);
 
     // Skip bottom of 9th+ if home is winning.
     if (state.inning >= 9 && state.runs.home > state.runs.away) break;
     state.half = 'bottom';
-    playHalfInning(state, rng, input.playerIndex, input.stadiumQuirk);
+    playHalfInning(state, rng, input.playerIndex, input.stadiumQuirk, input.stadiumDimensions);
 
     if (state.inning >= 9 && state.runs.home !== state.runs.away) break;
 

@@ -3,6 +3,8 @@ import { generateInitialLeague } from '../content/index.js';
 import { buildSchedule, buildLineup } from '../season/index.js';
 import { runGame, buildBoxScore } from './index.js';
 import type { GameInput, SideInput } from './types.js';
+import type { StadiumDimensions } from '../world/types.js';
+import { PLACEHOLDER_DIMENSIONS } from '../world/stadium-geometry.js';
 
 const buildInputForFirstGame = (masterSeed: number, gameSeed: number): GameInput => {
   const league = generateInitialLeague(masterSeed);
@@ -155,6 +157,104 @@ describe('pitcher zone tendencies', () => {
     // Most pitchers with enough sample size should show a clear hot/cold
     // skew — uniform sampling would not.
     expect(withBias / qualifiedPitchers).toBeGreaterThan(0.6);
+  });
+});
+
+// Phase 5 fence-aware HR check: rolled home-run trajectories that fall short
+// of the actual fence at their spray angle are downgraded to wall-balls.
+// These tests lock the contract: park geometry visibly moves HR/G, and the
+// neutral-park HR rate stays in the same band as before the change.
+describe('fence-aware home runs', () => {
+  // Helper: run N games on a single park geometry, count atBatEnd
+  // outcomes by kind. Same seeds + teams across calls so the only
+  // varying input is the stadium dimensions.
+  const countOutcomesAcrossPark = (
+    dims: StadiumDimensions | undefined,
+    games: number,
+  ): { hr: number; doubles: number; flyouts: number; runs: number } => {
+    let hr = 0;
+    let doubles = 0;
+    let flyouts = 0;
+    let runs = 0;
+    for (let s = 1; s <= games; s++) {
+      const baseInput = buildInputForFirstGame(0xba_5e_ba_11, s);
+      const input: GameInput = dims
+        ? { ...baseInput, stadiumDimensions: dims }
+        : baseInput;
+      const events = runGame(input);
+      for (const ev of events) {
+        if (ev.kind === 'atBatEnd') {
+          if (ev.outcome === 'home-run') hr += 1;
+          else if (ev.outcome === 'double') doubles += 1;
+          else if (ev.outcome === 'flyout') flyouts += 1;
+        } else if (ev.kind === 'gameEnd') {
+          runs += ev.finalRuns.home + ev.finalRuns.away;
+        }
+      }
+    }
+    return { hr, doubles, flyouts, runs };
+  };
+
+  // Two synthetic parks isolate the geometric effect: one tiny across the
+  // board (everything is a HR target), one cavernous (deep flies die at
+  // the warning track). 50 games each is enough sample to read a clear
+  // signal without slowing the suite.
+  const SHORT_PARK: StadiumDimensions = {
+    leftFt: 305,
+    leftCenterFt: 310,
+    centerFt: 320,
+    rightCenterFt: 310,
+    rightFt: 305,
+    wallHeightFt: 8,
+    foulTerritoryRating: 5,
+    moundHeightIn: 10,
+  };
+  const DEEP_PARK: StadiumDimensions = {
+    leftFt: 380,
+    leftCenterFt: 410,
+    centerFt: 440,
+    rightCenterFt: 410,
+    rightFt: 380,
+    wallHeightFt: 18,
+    foulTerritoryRating: 5,
+    moundHeightIn: 10,
+  };
+
+  it('a short park produces noticeably more HRs than a deep park (same seeds, same teams)', () => {
+    const short = countOutcomesAcrossPark(SHORT_PARK, 50);
+    const deep = countOutcomesAcrossPark(DEEP_PARK, 50);
+    expect(short.hr).toBeGreaterThan(0);
+    expect(deep.hr).toBeGreaterThan(0);
+    // The geometric effect should be unmistakable. We expect the short
+    // park to produce at least 1.3× the HRs of the deep park; in
+    // practice the gap is usually wider, but this lower bound holds
+    // across seed variance.
+    expect(short.hr / deep.hr).toBeGreaterThan(1.3);
+  });
+
+  it('a deep park converts some would-be HRs into doubles and flyouts (wall-ball downgrades)', () => {
+    const short = countOutcomesAcrossPark(SHORT_PARK, 50);
+    const deep = countOutcomesAcrossPark(DEEP_PARK, 50);
+    // Combined non-HR ball-in-air outcomes should be higher in the deep
+    // park because borderline HR rolls are now downgraded.
+    expect(deep.doubles + deep.flyouts).toBeGreaterThan(short.doubles + short.flyouts);
+  });
+
+  it('neutral-park HR/G stays in the same band as the legacy (no-dimensions) path', () => {
+    // Calibration lock: with the +0.003 base bump and the geometry filter
+    // active in a neutral-ish park, total HRs across a 50-game batch
+    // shouldn't drift more than ~25% from the legacy no-dimensions path
+    // on the same seeds. Loose enough to absorb seed variance, tight
+    // enough to catch a calibration regression.
+    const legacy = countOutcomesAcrossPark(undefined, 50);
+    const filtered = countOutcomesAcrossPark(PLACEHOLDER_DIMENSIONS, 50);
+    const ratio = filtered.hr / Math.max(1, legacy.hr);
+    expect(ratio).toBeGreaterThan(0.75);
+    expect(ratio).toBeLessThan(1.25);
+    // Run environment also shouldn't shift much.
+    const runRatio = filtered.runs / Math.max(1, legacy.runs);
+    expect(runRatio).toBeGreaterThan(0.85);
+    expect(runRatio).toBeLessThan(1.15);
   });
 });
 

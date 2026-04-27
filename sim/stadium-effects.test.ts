@@ -9,11 +9,14 @@ describe('stadium-effects.adjustmentsFor', () => {
     expect(adjustmentsFor({ kind: 'pond-beyond-rf' })).toEqual(NEUTRAL_ADJUSTMENTS);
   });
 
-  it('boosts HR rate for short porches, more so the shorter the porch', () => {
+  it('short-porch leaves HR rate neutral (Phase 5: HR uptick is emergent from geometry)', () => {
     const longPorch = adjustmentsFor({ kind: 'short-porch', side: 'right', distanceFt: 318 });
     const shortPorch = adjustmentsFor({ kind: 'short-porch', side: 'right', distanceFt: 305 });
-    expect(longPorch.hrRateMul).toBeGreaterThan(1);
-    expect(shortPorch.hrRateMul).toBeGreaterThan(longPorch.hrRateMul);
+    expect(longPorch.hrRateMul).toBe(1.0);
+    expect(shortPorch.hrRateMul).toBe(1.0);
+    // Doubles still get a small bump — the high short-porch wall ricochets
+    // some flies into wall-balls.
+    expect(longPorch.doubleRateMul).toBeGreaterThan(1);
   });
 
   it('boosts HR rate at altitude proportional to elevation', () => {
@@ -31,9 +34,9 @@ describe('stadium-effects.adjustmentsFor', () => {
     expect(cross).toEqual(NEUTRAL_ADJUSTMENTS);
   });
 
-  it('deep center cuts HR but adds triples', () => {
+  it('deep center leaves HR rate neutral (Phase 5: HR cut is emergent from geometry); still adds triples', () => {
     const deep = adjustmentsFor({ kind: 'deep-center', distanceFt: 425 });
-    expect(deep.hrRateMul).toBeLessThan(1);
+    expect(deep.hrRateMul).toBe(1.0);
     expect(deep.tripleRateMul).toBeGreaterThan(1);
   });
 });
