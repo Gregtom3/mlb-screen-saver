@@ -2,6 +2,7 @@
 // downstream packages render, score, and react to that log.
 
 import type {
+  CoachingStaff,
   Player,
   PlayerId,
   Position,
@@ -160,6 +161,10 @@ export interface SideInput {
   // Position → player. P slot is overridden at runtime to the active pitcher
   // so mid-game changes are reflected. DH is allowed to be absent.
   readonly defenseByPosition: Readonly<Partial<Record<Position, PlayerId>>>;
+  // Coaching staff modifiers for this side. Optional so legacy fixtures /
+  // ad-hoc test inputs without a CoachingStaff continue to run with neutral
+  // defaults. See /sim/coaching-effects.ts.
+  readonly coachingStaff?: CoachingStaff;
 }
 
 export interface GameInput {
