@@ -34,11 +34,16 @@ export const TOP_HUD_HEIGHT = STANDINGS_HEIGHT + SCOREBUG_HEIGHT;
 const TIER_1_H = 40;
 const TIER_2_H = SCOREBUG_HEIGHT - TIER_1_H;
 
-// Bottom panels sit above the floating #controls overlay (~36 px tall in
-// CSS pixels, doubled when devicePixelRatio = 2). Inset accounts for that
-// so the panels stay readable without sliding under the controls.
-const PANEL_BOTTOM_INSET = 56;
+// Bottom panels sit just above the bottom edge of the canvas. The canvas
+// itself no longer extends behind the floating #controls bar (it sits
+// above the bar in a flex column), so this is just a small breathing
+// margin within the canvas — not a clearance for an overlay.
+const PANEL_BOTTOM_INSET = 14;
 const PANEL_HEIGHT = 78;
+// Narrow-canvas panels grow vertically so the strike-zone grid and line
+// score stay legible at DPR=2, where a 78-canvas-px tall panel paints
+// only ~39 CSS px on screen. 130 canvas px ⇒ ~65 CSS px on most phones.
+const PANEL_HEIGHT_NARROW = 130;
 const BATTER_CARD_W = 240;
 const LINE_SCORE_W = 320;
 const ZONE_PANEL_W = 96;
@@ -48,9 +53,9 @@ const ZONE_PANEL_W = 96;
 // 720-px canvas a 360-CSS-px phone produces at DPR=2 so the desktop layout
 // still wins on tablets and most laptops.
 const NARROW_CANVAS_W = 880;
-const BATTER_CARD_W_NARROW = 156;
-const ZONE_PANEL_W_NARROW = 78;
-const LINE_SCORE_W_NARROW = 132;
+const BATTER_CARD_W_NARROW = 168;
+const ZONE_PANEL_W_NARROW = 110;
+const LINE_SCORE_W_NARROW = 156;
 
 const COLOR_BG = 'rgba(11, 13, 16, 0.92)';
 const COLOR_BG_TIER2 = 'rgba(15, 18, 22, 0.92)';
@@ -82,7 +87,8 @@ interface TeamBugInfo {
 
 // Bottom-row sizing computed once per frame and threaded into the panel
 // drawers so all three agree on widths and margins. `narrow` selects the
-// compact mode used on phone-class viewports.
+// compact mode used on phone-class viewports — bigger fonts and a taller
+// panel strip so the strike-zone box stays legible at DPR=2.
 interface BottomLayout {
   readonly narrow: boolean;
   readonly marginX: number;
@@ -90,7 +96,21 @@ interface BottomLayout {
   readonly batterW: number;
   readonly zoneW: number;
   readonly lineW: number;
+  readonly panelHeight: number;
+  readonly fontHeading: string;
+  readonly fontBig: string;
+  readonly fontSmall: string;
+  readonly fontLineHeader: string;
+  readonly fontLineValue: string;
 }
+
+// Total canvas pixels the bottom HUD takes — used by the field transform to
+// reserve room below home plate. Exported so /render/transform can dial
+// the visible field height accordingly without reaching into HUD layout.
+export const bottomHudReserved = (canvasWidth: number): number => {
+  const narrow = canvasWidth < NARROW_CANVAS_W;
+  return (narrow ? PANEL_HEIGHT_NARROW : PANEL_HEIGHT) + PANEL_BOTTOM_INSET;
+};
 
 export const drawHud = (
   ctx: CanvasRenderingContext2D,
@@ -123,10 +143,11 @@ export const drawHud = (
   cursor = drawPitcherCount(ctx, cursor + 22, sbY + TIER_1_H + TIER_2_H / 2, scene);
   drawLastPlay(ctx, cursor + 18, t.canvasWidth - 12, sbY + TIER_1_H + TIER_2_H / 2, scene);
 
-  // Bottom-row layout: compact widths kick in for narrow canvases (phones)
-  // so the strike zone viewer and the line score both stay on-screen.
+  // Bottom-row layout: compact widths + bigger fonts kick in for narrow
+  // canvases (phones) so the strike zone viewer and the line score both
+  // stay on-screen and readable at DPR=2.
   const narrow = t.canvasWidth < NARROW_CANVAS_W;
-  const layout = narrow
+  const layout: BottomLayout = narrow
     ? {
         narrow: true,
         marginX: 6,
@@ -134,6 +155,12 @@ export const drawHud = (
         batterW: BATTER_CARD_W_NARROW,
         zoneW: ZONE_PANEL_W_NARROW,
         lineW: LINE_SCORE_W_NARROW,
+        panelHeight: PANEL_HEIGHT_NARROW,
+        fontHeading: 'bold 16px ui-monospace, "JetBrains Mono", monospace',
+        fontBig: 'bold 22px ui-monospace, "JetBrains Mono", monospace',
+        fontSmall: '16px ui-monospace, "JetBrains Mono", monospace',
+        fontLineHeader: 'bold 16px ui-monospace, "JetBrains Mono", monospace',
+        fontLineValue: 'bold 20px ui-monospace, "JetBrains Mono", monospace',
       }
     : {
         narrow: false,
@@ -142,6 +169,12 @@ export const drawHud = (
         batterW: BATTER_CARD_W,
         zoneW: ZONE_PANEL_W,
         lineW: LINE_SCORE_W,
+        panelHeight: PANEL_HEIGHT,
+        fontHeading: FONT_PANEL_HEADING,
+        fontBig: FONT_PANEL_BIG,
+        fontSmall: FONT_PANEL_SMALL,
+        fontLineHeader: FONT_LINE_HEADER,
+        fontLineValue: FONT_LINE_VALUE,
       };
   drawBatterCard(ctx, t, scene, playerIndex, teams, layout);
   drawStrikeZoneViewer(ctx, t, scene, layout);
@@ -564,28 +597,35 @@ const drawBatterCard = (
   layout: BottomLayout,
 ): void => {
   const x = layout.marginX;
-  const y = t.canvasHeight - PANEL_HEIGHT - PANEL_BOTTOM_INSET;
+  const h = layout.panelHeight;
+  const y = t.canvasHeight - h - PANEL_BOTTOM_INSET;
   const w = layout.batterW;
-  const padX = layout.narrow ? 8 : 12;
+  const padX = layout.narrow ? 10 : 12;
+  // Vertical anchor offsets — slightly different for the taller narrow card
+  // so the heading, name, position, and stat line all spread out evenly.
+  const headingY = layout.narrow ? 10 : 8;
+  const nameY = layout.narrow ? 36 : 24;
+  const subY = layout.narrow ? 64 : 44;
+  const statY = layout.narrow ? 92 : 60;
   // Background.
   ctx.fillStyle = COLOR_PANEL;
-  ctx.fillRect(x, y, w, PANEL_HEIGHT);
+  ctx.fillRect(x, y, w, h);
   ctx.strokeStyle = COLOR_PANEL_BORDER;
   ctx.lineWidth = 1;
-  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, PANEL_HEIGHT - 1);
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 
   // Heading.
-  ctx.font = FONT_PANEL_HEADING;
+  ctx.font = layout.fontHeading;
   ctx.fillStyle = COLOR_DIM;
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
-  ctx.fillText('AT BAT', x + padX, y + 8);
+  ctx.fillText('AT BAT', x + padX, y + headingY);
 
   // Nothing yet?
   if (scene.phase === 'pre-game' || scene.phase === 'final') {
-    ctx.font = FONT_PANEL_SMALL;
+    ctx.font = layout.fontSmall;
     ctx.fillStyle = COLOR_DIM;
-    ctx.fillText(scene.phase === 'pre-game' ? 'pre-game' : 'final', x + padX, y + 32);
+    ctx.fillText(scene.phase === 'pre-game' ? 'pre-game' : 'final', x + padX, y + nameY);
     return;
   }
 
@@ -607,27 +647,27 @@ const drawBatterCard = (
   const batter = activeBatterId ? playerIndex.get(activeBatterId) : null;
 
   if (!batter) {
-    ctx.font = FONT_PANEL_SMALL;
+    ctx.font = layout.fontSmall;
     ctx.fillStyle = COLOR_DIM;
-    ctx.fillText('—', x + padX, y + 32);
+    ctx.fillText('—', x + padX, y + nameY);
     return;
   }
 
   // Team color stripe down the left edge of the card.
   ctx.fillStyle = battingTeamColors.primary;
-  ctx.fillRect(x, y, 4, PANEL_HEIGHT);
+  ctx.fillRect(x, y, 4, h);
 
   // Batter name + position. On narrow viewports the first name compresses
   // to an initial so the surname always fits.
   const displayName = layout.narrow
     ? `${batter.firstName.charAt(0)}. ${batter.lastName}`
     : `${batter.firstName} ${batter.lastName}`;
-  ctx.font = FONT_PANEL_BIG;
+  ctx.font = layout.fontBig;
   ctx.fillStyle = COLOR_TEXT;
-  ctx.fillText(displayName, x + padX, y + 24);
-  ctx.font = FONT_PANEL_SMALL;
+  ctx.fillText(displayName, x + padX, y + nameY);
+  ctx.font = layout.fontSmall;
   ctx.fillStyle = COLOR_DIM;
-  ctx.fillText(`${batter.primaryPosition}  ${batter.bats}/${batter.throws}`, x + padX, y + 44);
+  ctx.fillText(`${batter.primaryPosition}  ${batter.bats}/${batter.throws}`, x + padX, y + subY);
 
   // Current-game line: H-for-AB (HR, RBI). Phase 1 doesn't track season yet.
   if (scene.batterStats) {
@@ -635,19 +675,19 @@ const drawBatterCard = (
     const line = `${s.hits}-for-${s.atBats}` +
       (s.homeRuns > 0 ? `  ${s.homeRuns} HR` : '') +
       (s.rbis > 0 ? `  ${s.rbis} RBI` : '');
-    ctx.font = FONT_PANEL_SMALL;
+    ctx.font = layout.fontSmall;
     ctx.fillStyle = COLOR_TEXT;
-    ctx.fillText(line, x + padX, y + 60);
+    ctx.fillText(line, x + padX, y + statY);
   }
 
   // On-deck — desktop only; the narrow card doesn't have room.
   if (!layout.narrow && scene.onDeckBatterId) {
     const onDeck = playerIndex.get(scene.onDeckBatterId);
     if (onDeck) {
-      ctx.font = FONT_PANEL_SMALL;
+      ctx.font = layout.fontSmall;
       ctx.fillStyle = COLOR_DIM;
       ctx.textAlign = 'right';
-      ctx.fillText(`on deck: ${onDeck.lastName}`, x + w - padX, y + 60);
+      ctx.fillText(`on deck: ${onDeck.lastName}`, x + w - padX, y + statY);
     }
   }
 };
@@ -694,9 +734,9 @@ const drawStrikeZoneViewer = (
 ): void => {
   // Anchor: just to the right of the batter card.
   const x = layout.marginX + layout.batterW + layout.gap;
-  const y = t.canvasHeight - PANEL_HEIGHT - PANEL_BOTTOM_INSET;
+  const y = t.canvasHeight - layout.panelHeight - PANEL_BOTTOM_INSET;
   const w = layout.zoneW;
-  const h = PANEL_HEIGHT;
+  const h = layout.panelHeight;
 
   ctx.fillStyle = COLOR_PANEL;
   ctx.fillRect(x, y, w, h);
@@ -704,11 +744,11 @@ const drawStrikeZoneViewer = (
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 
-  ctx.font = FONT_PANEL_HEADING;
+  ctx.font = layout.fontHeading;
   ctx.fillStyle = COLOR_DIM;
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
-  ctx.fillText(layout.narrow ? 'ZONE' : 'STRIKE ZONE', x + 8, y + 8);
+  ctx.fillText(layout.narrow ? 'ZONE' : 'STRIKE ZONE', x + 8, y + (layout.narrow ? 10 : 8));
 
   // Compute the zone window. The plate is fixed in width; the box height
   // varies with the batter's listed height so a 6'5" hitter gets a taller
@@ -716,22 +756,23 @@ const drawStrikeZoneViewer = (
   // so the same xy mapping works without rescaling pitch markers.
   const sz = scene.strikeZone;
   const zoneHeightFt = sz ? heightToZoneHeight(sz.batterHeightFt) : 1.7;
-  // Reference visual zone: 36px (or 30 narrow) wide, baseline 36px (30) tall
-  // at heightFt=6.0. We scale the height linearly with zoneHeightFt; cap the
-  // visible range so small differences read but a giant doesn't blow out the
-  // panel.
-  const zoneW = layout.narrow ? 30 : 36;
-  const zoneH = Math.round((layout.narrow ? 30 : 36) * (zoneHeightFt / 1.7));
+  // Reference visual zone: 56 px wide on narrow (DPR=2 ⇒ 28 CSS px,
+  // readable on a phone), 36 px on desktop. Height scales linearly with
+  // zoneHeightFt so small/large hitters read distinct, but bounded so
+  // even an outlier never overflows the panel.
+  const zoneBaseW = layout.narrow ? 56 : 36;
+  const zoneW = zoneBaseW;
+  const zoneH = Math.round(zoneBaseW * (zoneHeightFt / 1.7));
   const cx = x + w / 2;
-  const cy = y + h / 2 + 4;
+  const cy = y + h / 2 + (layout.narrow ? 6 : 4);
   const zx = Math.round(cx - zoneW / 2);
   const zy = Math.round(cy - zoneH / 2);
 
   ctx.fillStyle = ZONE_BG;
   // The "outside the zone" play area extends past the box on every side
   // so we can plot ball/HBP locations beyond the strike zone proper.
-  const padX = layout.narrow ? 12 : 16;
-  const padY = layout.narrow ? 10 : 14;
+  const padX = layout.narrow ? 18 : 16;
+  const padY = layout.narrow ? 16 : 14;
   ctx.fillRect(zx - padX, zy - padY, zoneW + padX * 2, zoneH + padY * 2);
   // Strike zone box.
   ctx.fillStyle = ZONE_INSIDE_TINT;
@@ -753,11 +794,11 @@ const drawStrikeZoneViewer = (
   ctx.stroke();
 
   if (!sz || sz.pitches.length === 0) {
-    ctx.font = FONT_PANEL_SMALL;
+    ctx.font = layout.fontSmall;
     ctx.fillStyle = COLOR_DIM;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillText('—', cx, y + h - 16);
+    ctx.fillText('—', cx, y + h - 18);
     return;
   }
 
@@ -765,6 +806,11 @@ const drawStrikeZoneViewer = (
   // most recent one as the "live" mark. We use deterministic per-pitch
   // jitter inside the cell so two strikes in the same zone don't land on
   // the same pixel.
+  const dotBase = layout.narrow ? 9 : 5;
+  const dotLatest = layout.narrow ? 11 : 6;
+  const glyphFont = layout.narrow
+    ? 'bold 12px ui-monospace, "JetBrains Mono", monospace'
+    : 'bold 8px ui-monospace, "JetBrains Mono", monospace';
   for (let i = 0; i < sz.pitches.length; i++) {
     const p = sz.pitches[i]!;
     const ageFrac = (i + 1) / sz.pitches.length; // newer = closer to 1
@@ -774,7 +820,7 @@ const drawStrikeZoneViewer = (
     ctx.save();
     ctx.globalAlpha = alpha;
     // Pixel-art square dot for an 8-bit feel.
-    const sq = i === sz.pitches.length - 1 ? 6 : 5;
+    const sq = i === sz.pitches.length - 1 ? dotLatest : dotBase;
     ctx.fillStyle = '#0a0c10';
     ctx.fillRect(Math.round(px - sq / 2) - 1, Math.round(py - sq / 2) - 1, sq + 2, sq + 2);
     ctx.fillStyle = color;
@@ -783,7 +829,7 @@ const drawStrikeZoneViewer = (
     const glyph = ZONE_PITCH_GLYPHS[p.result];
     if (i === sz.pitches.length - 1 && glyph) {
       ctx.fillStyle = '#0a0c10';
-      ctx.font = 'bold 8px ui-monospace, "JetBrains Mono", monospace';
+      ctx.font = glyphFont;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(glyph, Math.round(px), Math.round(py + 1));
@@ -889,16 +935,17 @@ const drawLineScore = (
   layout: BottomLayout,
 ): void => {
   const w = layout.lineW;
+  const h = layout.panelHeight;
   const x = t.canvasWidth - w - layout.marginX;
-  const y = t.canvasHeight - PANEL_HEIGHT - PANEL_BOTTOM_INSET;
+  const y = t.canvasHeight - h - PANEL_BOTTOM_INSET;
   ctx.fillStyle = COLOR_PANEL;
-  ctx.fillRect(x, y, w, PANEL_HEIGHT);
+  ctx.fillRect(x, y, w, h);
   ctx.strokeStyle = COLOR_PANEL_BORDER;
   ctx.lineWidth = 1;
-  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, PANEL_HEIGHT - 1);
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 
   if (layout.narrow) {
-    drawCompactRhe(ctx, x, y, w, teams, scene);
+    drawCompactRhe(ctx, x, y, w, h, teams, scene, layout);
     return;
   }
 
@@ -954,33 +1001,40 @@ const drawCompactRhe = (
   x: number,
   y: number,
   w: number,
+  h: number,
   teams: { away: TeamBugInfo; home: TeamBugInfo },
   scene: SceneState,
+  layout: BottomLayout,
 ): void => {
   // Header.
-  ctx.font = FONT_LINE_HEADER;
+  ctx.font = layout.fontLineHeader;
   ctx.fillStyle = COLOR_DIM;
   ctx.textBaseline = 'middle';
-  const headerY = y + 14;
-  const abbrCellW = 44;
-  const rheStartX = x + abbrCellW + 8;
-  const rheCol = (w - abbrCellW - 16) / 3;
+  const headerY = y + 18;
+  const abbrCellW = 50;
+  const rheStartX = x + abbrCellW + 10;
+  const rheCol = (w - abbrCellW - 18) / 3;
   ctx.textAlign = 'center';
   ctx.fillText('R', rheStartX + rheCol * 0.5, headerY);
   ctx.fillText('H', rheStartX + rheCol * 1.5, headerY);
   ctx.fillText('E', rheStartX + rheCol * 2.5, headerY);
 
+  // Two evenly-spaced rows below the header. With h = PANEL_HEIGHT_NARROW
+  // we have plenty of vertical room, so this looks like a real scorebox.
+  const rowGap = (h - 36) / 3; // header takes the top third-ish
+  const rowAY = y + 36 + rowGap * 0.5;
+  const rowHY = y + 36 + rowGap * 1.5;
   const drawRow = (
     cy: number,
     abbr: string,
     totals: { runs: number; hits: number; errors: number },
     primaryColor: string,
   ): void => {
-    ctx.font = FONT_LINE_VALUE;
+    ctx.font = layout.fontLineValue;
     ctx.textBaseline = 'middle';
     ctx.fillStyle = primaryColor;
     ctx.globalAlpha = 0.32;
-    ctx.fillRect(x + 4, cy - 11, abbrCellW, 20);
+    ctx.fillRect(x + 4, cy - 13, abbrCellW, 26);
     ctx.globalAlpha = 1;
     ctx.fillStyle = COLOR_TEXT;
     ctx.textAlign = 'center';
@@ -991,8 +1045,8 @@ const drawCompactRhe = (
     ctx.fillText(String(totals.hits), rheStartX + rheCol * 1.5, cy);
     ctx.fillText(String(totals.errors), rheStartX + rheCol * 2.5, cy);
   };
-  drawRow(y + 36, teams.away.abbr, scene.lineScore.away, teams.away.primary);
-  drawRow(y + 60, teams.home.abbr, scene.lineScore.home, teams.home.primary);
+  drawRow(rowAY, teams.away.abbr, scene.lineScore.away, teams.away.primary);
+  drawRow(rowHY, teams.home.abbr, scene.lineScore.home, teams.home.primary);
 };
 
 const drawLineScoreRow = (
