@@ -292,8 +292,46 @@ const buildBallPath = (
   pitchCount: number,
   rng: PRNG,
 ): BallPath => {
-  const profile = PROFILES[outcome];
-  if (!profile) throw new Error(`buildBallPath called for non-contact outcome: ${outcome}`);
+  const baseProfile = PROFILES[outcome];
+  if (!baseProfile) throw new Error(`buildBallPath called for non-contact outcome: ${outcome}`);
+
+  // Singles and doubles get sub-typed at trajectory time so their on-screen
+  // shape matches real baseball. A flat single profile concentrates too many
+  // balls in the infield arc — every single ends up looking like a weak
+  // dribbler scooped by P/1B. Real singles are mostly line drives over the
+  // infield, with smaller shares of bloops, hard grounders through the hole,
+  // and legit infield singles. Doubles cluster in the gaps and down the line.
+  let profile = baseProfile;
+  let manualSpray: number | undefined;
+  if (outcome === 'single') {
+    const r = rng.next();
+    if (r < 0.10) {
+      // Legit infield single — weak grounder fielded by P/1B/SS.
+      profile = { evMin: 60, evMax: 80, angleMin: -10, angleMax: -2 };
+    } else if (r < 0.30) {
+      // Hard grounder through the 3-4 or 5-6 hole, into the outfield grass.
+      profile = { evMin: 90, evMax: 102, angleMin: -3, angleMax: 4 };
+      const sign = rng.next() < 0.5 ? -1 : 1;
+      manualSpray = sign * (15 + rng.next() * 12);
+    } else if (r < 0.85) {
+      // Line drive over the infielders — the bread-and-butter outfield single.
+      profile = { evMin: 88, evMax: 100, angleMin: 10, angleMax: 22 };
+    } else {
+      // Bloop / Texas leaguer — high arc, low velocity, drops in shallow OF.
+      profile = { evMin: 64, evMax: 80, angleMin: 26, angleMax: 42 };
+    }
+  } else if (outcome === 'double') {
+    // Trimodal: down the line, gap, and the occasional straight-away wall ball.
+    const sign = rng.next() < 0.5 ? -1 : 1;
+    const r = rng.next();
+    if (r < 0.35) {
+      manualSpray = sign * (26 + rng.next() * 16); // ±26..±42 — down the line
+    } else if (r < 0.80) {
+      manualSpray = sign * (12 + rng.next() * 14); // ±12..±26 — gap
+    } else {
+      manualSpray = sign * rng.next() * 14; // ±0..±14 — straight away
+    }
+  }
 
   // Player-rating modulation, layered on top of the profile band. Pitcher
   // suppression uses the fatigue-adjusted stamina, so a gassed starter gives
@@ -312,7 +350,9 @@ const buildBallPath = (
 
   const sprayBias = batter.bats === 'L' ? +6 : batter.bats === 'R' ? -6 : 0;
   let sprayDeg: number;
-  if (profile.sprayCenter !== undefined && profile.spraySpread !== undefined) {
+  if (manualSpray !== undefined) {
+    sprayDeg = manualSpray + sprayBias;
+  } else if (profile.sprayCenter !== undefined && profile.spraySpread !== undefined) {
     sprayDeg = profile.sprayCenter + (rng.next() - 0.5) * 2 * profile.spraySpread + sprayBias;
   } else {
     // Triangular distribution peaked at 0° — most contact goes up the middle,
