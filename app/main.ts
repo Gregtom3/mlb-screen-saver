@@ -178,30 +178,29 @@ const buildSceneCtxFor = (
 };
 
 const setupAudioToggle = (sfx: { setEnabled(b: boolean): void; isEnabled(): boolean }) => {
-  // Audio is on by default. Browsers gate AudioContext construction on a user
-  // gesture, so we register one-shot listeners that unlock on the first
-  // pointer/key event anywhere on the page; the toggle button stays as a
-  // manual mute control.
+  // Audio is off by default. The AudioContext stays uncreated and the
+  // dispatcher stays disabled until the user explicitly clicks the audio
+  // button. First click unlocks (creates the context + enables the
+  // dispatcher + unmutes); subsequent clicks toggle mute on the bus.
   const btn = document.getElementById('audio-toggle') as HTMLButtonElement | null;
   const refreshLabel = () => {
-    if (btn) btn.textContent = isMuted() ? '🔇 audio' : '🔊 audio';
+    if (!btn) return;
+    // Audible only when both unlocked and unmuted; everything else reads
+    // as "off" (the muted glyph) since no sound emerges.
+    const audible = sfx.isEnabled() && !isMuted();
+    btn.textContent = audible ? '🔊 audio' : '🔇 audio';
   };
   refreshLabel();
 
-  const unlock = () => {
-    if (sfx.isEnabled()) return;
-    ensureAudio();
-    sfx.setEnabled(true);
-    refreshLabel();
-    document.removeEventListener('pointerdown', unlock);
-    document.removeEventListener('keydown', unlock);
-  };
-  document.addEventListener('pointerdown', unlock);
-  document.addEventListener('keydown', unlock);
-
   if (!btn) return;
   btn.addEventListener('click', () => {
-    setMuted(!isMuted());
+    if (!sfx.isEnabled()) {
+      ensureAudio();
+      sfx.setEnabled(true);
+      setMuted(false);
+    } else {
+      setMuted(!isMuted());
+    }
     refreshLabel();
   });
 };
