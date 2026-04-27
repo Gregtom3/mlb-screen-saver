@@ -28,6 +28,7 @@ import {
   flagAmplitudeFor,
 } from './stadium-cosmetics.js';
 import type { Stadium } from '../world/types.js';
+import type { CrowdState } from '../ambience/state.js';
 
 // drawField is the static park art. Per CLAUDE.md the renderer is a pure
 // function of (event log, tick); this layer paints everything that doesn't
@@ -81,6 +82,17 @@ export interface FieldDrawOptions {
   readonly inning?: number;
   // Home team's primary color — tints the dugout trim. Optional.
   readonly homeTeamPrimary?: string;
+  // Live crowd-ambience signal driving wave lifts on the bowl, density
+  // multipliers, flicker rate, tower-glow brightness, and a subtle
+  // home-color horizon tint when the home team is rallying. Optional —
+  // omitted in tests and pre-ambience callers; renderer falls back to a
+  // neutral baseline.
+  readonly crowdState?: CrowdState;
+  // Reaction-pulse-driven wave: the bowl front fans lift toward this
+  // angle (degrees from CF, negative = LF) at the given strength. Driven
+  // each frame by the active pulses' centerAngleDeg + envelope. Optional.
+  readonly waveCenterAngleDeg?: number;
+  readonly waveStrength?: number; // 0..1
 }
 
 // Lighten/darken an #rrggbb hex by a delta (-1..1).
@@ -136,6 +148,8 @@ export const drawField = (
       wall,
       simTime,
       ...(options.skyColor ? { skyTint: options.skyColor } : {}),
+      ...(options.crowdState ? { crowdState: options.crowdState } : {}),
+      ...(options.homeTeamPrimary ? { homeTeamPrimary: options.homeTeamPrimary } : {}),
     },
     bowl.lightTowers,
   );
@@ -162,6 +176,11 @@ export const drawField = (
       bowl,
       inning,
       simTime,
+      ...(options.crowdState ? { crowdState: options.crowdState } : {}),
+      ...(options.waveCenterAngleDeg !== undefined
+        ? { waveCenterAngleDeg: options.waveCenterAngleDeg }
+        : {}),
+      ...(options.waveStrength !== undefined ? { waveStrength: options.waveStrength } : {}),
     });
   }
 
@@ -280,6 +299,11 @@ export const drawField = (
       bowl,
       inning,
       simTime,
+      ...(options.crowdState ? { crowdState: options.crowdState } : {}),
+      ...(options.waveCenterAngleDeg !== undefined
+        ? { waveCenterAngleDeg: options.waveCenterAngleDeg }
+        : {}),
+      ...(options.waveStrength !== undefined ? { waveStrength: options.waveStrength } : {}),
     });
   }
 
