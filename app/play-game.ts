@@ -89,6 +89,7 @@ const main = () => {
     playerIndex,
     seed: gameSeed,
     stadiumQuirk: stadium.quirk,
+    stadiumDimensions: stadium.dimensions,
   };
 
   const events = runGame(input);

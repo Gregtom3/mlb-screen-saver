@@ -140,6 +140,7 @@ const buildGameInput = (
     playerIndex,
     seed: seed ^ fnv(entry.gameId),
     stadiumQuirk: stadium.quirk,
+    stadiumDimensions: stadium.dimensions,
   };
   return { input, home, away, stadium };
 };
