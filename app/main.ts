@@ -69,6 +69,40 @@ const isDayGameForGameId = (gameId: string, dayGameBias: number): boolean => {
   return hashFloat01(`${gameId}|day`) < dayGameBias;
 };
 
+// Extract in-progress game state by replaying events up to a given sim tick.
+// Returns the current inning, half, outs, and score at that moment.
+const extractLiveState = (
+  events: readonly SimEvent[],
+  upToTick: number,
+): { inning: number; half: 'top' | 'bottom'; outs: number; scoreHome: number; scoreAway: number } => {
+  let inning = 1;
+  let half: 'top' | 'bottom' = 'top';
+  let outs = 0;
+  let scoreHome = 0;
+  let scoreAway = 0;
+  for (const ev of events) {
+    if (ev.t > upToTick) break;
+    if (ev.kind === 'baserunner' && ev.to === 0 && !ev.out) {
+      if (half === 'top') scoreAway += 1;
+      else scoreHome += 1;
+    } else if (ev.kind === 'inningEnd') {
+      if (ev.halfInning === 'top') half = 'bottom';
+      else { inning = ev.inning + 1; half = 'top'; }
+      outs = 0;
+    } else if (ev.kind === 'atBatEnd') {
+      const o = ev.outcome;
+      const delta = o === 'double-play' ? 2 : o === 'triple-play' ? 3
+        : (o === 'walk' || o === 'hit-by-pitch' || o === 'single' || o === 'double'
+           || o === 'triple' || o === 'home-run' || o === 'reached-on-error') ? 0 : 1;
+      outs = Math.min(3, outs + delta);
+    } else if (ev.kind === 'gameEnd') {
+      scoreHome = ev.finalRuns.home;
+      scoreAway = ev.finalRuns.away;
+    }
+  }
+  return { inning, half, outs, scoreHome, scoreAway };
+};
+
 // Day vs night sky palettes — picked from a small fixed set so the screensaver
 // reads as time-of-day variation without hand-painting per stadium.
 const SKY_DAY = '#5a8fb8';
@@ -498,19 +532,23 @@ const main = () => {
   };
 
   const buildLiveSummaries = (): LiveGameSummary[] => {
+    const tick = handle.currentSimTime();
     return liveGames.map((g) => {
       const tl = aggregatesWithLive.wpTimelines.get(g.entry.gameId);
-      // Final state — all games are complete in this snapshot mode.
-      const last = g.events[g.events.length - 1];
-      const finalRuns = last && last.kind === 'gameEnd' ? last.finalRuns : { home: 0, away: 0 };
+      const { inning, half, outs, scoreHome, scoreAway } = extractLiveState(g.events, tick);
+      const isDay = isDayGameForGameId(
+        g.entry.gameId,
+        g.sceneCtx.stadium?.atmosphere.dayGameBias ?? 0.5,
+      );
       return {
         gameId: g.entry.gameId,
         homeTeamId: g.entry.homeTeamId,
         awayTeamId: g.entry.awayTeamId,
-        score: { home: finalRuns.home, away: finalRuns.away },
-        inning: 9,
-        half: 'bottom' as const,
-        outs: 3,
+        score: { home: scoreHome, away: scoreAway },
+        inning,
+        half,
+        outs,
+        isDay,
         wpTimeline: tl,
       };
     });
