@@ -21,7 +21,7 @@ import {
   drawStadiumBowlBack,
   drawStadiumBowlFront,
 } from './crowd.js';
-import { buildStadiumBowl } from './stadium-bowl.js';
+import { buildStadiumBowl, type StadiumBowl } from './stadium-bowl.js';
 import { drawSky } from './sky.js';
 import {
   drawStadiumCosmetic,
@@ -36,6 +36,9 @@ import type { Stadium } from '../world/types.js';
 //   1.  sky gradient + skyline silhouette + moon + light towers (back)
 //   2.  beyond-wall quirk cosmetics (mountains, ponds, clock tower)
 //   3.  stadium bowl BACK     (back-wall concrete + upper deck + roof)
+//   3b. foul-territory grass  (fills bowl interior; later layers overpaint
+//                              fair territory, leaving foul territory plain)
+//   3c. foul-line dirt strips (running lanes on the foul side of each line)
 //   4.  outfield wall outline + warning track
 //   5.  outfield grass + mow pattern + in-field cosmetics
 //   6.  infield dirt + infield grass + mound
@@ -162,14 +165,26 @@ export const drawField = (
     });
   }
 
+  const grassBase = options.grassShade ?? atmosphere?.grassShade ?? DEFAULT_GRASS_OUTFIELD;
+  const grassInfield = shiftHex(grassBase, +0.08);
+
+  // ---- Layer 3b: foul-territory grass --------------------------------------
+  // Fill the entire bowl interior with plain grass. The wall outline (3),
+  // fair-territory mowed grass (5), and infield dirt (6) overpaint
+  // everything inside fair territory, so this only remains visible in the
+  // foul-territory band between the foul lines and the bowl front edge.
+  drawFoulTerritoryGrass(ctx, bowl, grassBase);
+
+  // ---- Layer 3c: foul-line dirt strips -------------------------------------
+  // Thin dirt parallelograms on the foul side of each line, home → pole.
+  drawFoulLineDirt(ctx, t, wall, DIRT);
+
   // ---- Layer 4: outfield wall ---------------------------------------------
   drawOutfieldWall(ctx, t, wall);
 
   // ---- Layer 5: outfield grass + selected pattern --------------------------
   // Everything from here in is clipped to fair territory so the dirt and
   // outfield grass can never bleed across the foul lines.
-  const grassBase = options.grassShade ?? atmosphere?.grassShade ?? DEFAULT_GRASS_OUTFIELD;
-  const grassInfield = shiftHex(grassBase, +0.08);
   ctx.save();
   ctx.beginPath();
   fairTerritoryPath(ctx, t, wall);
@@ -340,6 +355,71 @@ const drawBase = (
   ctx.strokeStyle = '#cdcab1';
   ctx.lineWidth = 1;
   ctx.strokeRect(s.x - sz / 2, s.y - sz / 2, sz, sz);
+};
+
+// Plain grass over the entire bowl interior. Drawn after the bowl back so it
+// doesn't paint over the upper-deck silhouette, but before the wall outline
+// and fair-territory grass so those layers paint over the fair-side area.
+// What remains visible is the foul-territory band between the foul lines and
+// the lower-bowl front edge.
+const drawFoulTerritoryGrass = (
+  ctx: CanvasRenderingContext2D,
+  bowl: StadiumBowl,
+  fillColor: string,
+): void => {
+  const front = bowl.front;
+  if (front.length === 0) return;
+  ctx.save();
+  ctx.fillStyle = fillColor;
+  ctx.beginPath();
+  ctx.moveTo(front[0]!.screen.x, front[0]!.screen.y);
+  for (let i = 1; i < front.length; i++) {
+    ctx.lineTo(front[i]!.screen.x, front[i]!.screen.y);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+};
+
+// A dirt running-lane on the foul side of each foul line, from home plate to
+// the foul pole. Drawn as a parallelogram offset perpendicular into foul
+// territory. The chalk foul line is drawn later (Layer 8) and sits exactly on
+// the inner edge of the dirt.
+const drawFoulLineDirt = (
+  ctx: CanvasRenderingContext2D,
+  t: FieldTransform,
+  wall: WallPath,
+  fillColor: string,
+): void => {
+  const FOUL_LINE_DIRT_WIDTH_FT = 6;
+  const home = worldToScreen(HOME_PLATE, t);
+  const widthPx = FOUL_LINE_DIRT_WIDTH_FT * t.pixelsPerFoot;
+  ctx.save();
+  ctx.fillStyle = fillColor;
+  for (const corner of [wall.leftFoul, wall.rightFoul]) {
+    const cornerScreen = worldToScreen(corner, t);
+    const dx = cornerScreen.x - home.x;
+    const dy = cornerScreen.y - home.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    // Pick the perpendicular pointing into foul territory: same x-sign as the
+    // line itself (RF line goes right → foul side is further right; LF line
+    // goes left → foul side is further left).
+    const perpX = -uy;
+    const perpY = ux;
+    const sign = Math.sign(perpX) === Math.sign(dx) ? 1 : -1;
+    const nx = perpX * sign;
+    const ny = perpY * sign;
+    ctx.beginPath();
+    ctx.moveTo(home.x, home.y);
+    ctx.lineTo(home.x + nx * widthPx, home.y + ny * widthPx);
+    ctx.lineTo(cornerScreen.x + nx * widthPx, cornerScreen.y + ny * widthPx);
+    ctx.lineTo(cornerScreen.x, cornerScreen.y);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
 };
 
 const drawHomePlate = (ctx: CanvasRenderingContext2D, t: FieldTransform): void => {
