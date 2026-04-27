@@ -125,6 +125,7 @@ const buildGameInput = (
     startingPitcherId: homeLineup.startingPitcher,
     bullpen: homeLineup.bullpen,
     defenseByPosition: homeLineup.defenseByPosition,
+    coachingStaff: home.coachingStaff,
   };
   const awaySide: SideInput = {
     teamId: away.id,
@@ -132,6 +133,7 @@ const buildGameInput = (
     startingPitcherId: awayLineup.startingPitcher,
     bullpen: awayLineup.bullpen,
     defenseByPosition: awayLineup.defenseByPosition,
+    coachingStaff: away.coachingStaff,
   };
   const input: GameInput = {
     gameId: entry.gameId,

@@ -145,6 +145,43 @@ export interface TeamColors {
   readonly accent: string; // hex
 }
 
+// Coaching staff. Each coach role plugs into a different part of the sim
+// through a modifier function in /sim/coaching-effects.ts. Ratings are
+// 1-99, 50 = neutral, same scale as PlayerRatings.
+//
+//  - Head coach (`tactics`, `morale`): nudges infield-shift slices toward
+//    the batter's pull side and (Phase 6+) team-wide morale modifier.
+//  - First-base coach (`baserunningCoaching`, `pickoffAwareness`): wired
+//    once steal/pickoff sim lands; rating exists today as data-only so the
+//    activation is a one-line change in coaching-effects when steals ship.
+//  - Third-base coach (`aggression`, `judgment`): gates "score from 2B on
+//    single" and tag-up success on sac flies. Aggression raises the send
+//    rate, judgment lowers TOOTBLAN risk.
+export type CoachRole = 'head' | 'first-base' | 'third-base';
+
+export interface CoachRatings {
+  readonly tactics: number; // head — defensive shift quality
+  readonly morale: number; // head — clubhouse / leadership (Phase 6+)
+  readonly baserunningCoaching: number; // 1B — SB technique boost (deferred)
+  readonly pickoffAwareness: number; // 1B — pickoff prevention (deferred)
+  readonly aggression: number; // 3B — send rate
+  readonly judgment: number; // 3B — avoiding outs at the plate
+}
+
+export interface Coach {
+  readonly id: string;
+  readonly firstName: string;
+  readonly lastName: string;
+  readonly role: CoachRole;
+  readonly ratings: CoachRatings;
+}
+
+export interface CoachingStaff {
+  readonly head: Coach;
+  readonly firstBase: Coach;
+  readonly thirdBase: Coach;
+}
+
 export interface Team {
   readonly id: TeamId;
   readonly city: string;
@@ -155,6 +192,7 @@ export interface Team {
   readonly colors: TeamColors;
   readonly mascot: string;
   readonly stadiumId: StadiumId;
+  readonly coachingStaff: CoachingStaff;
 }
 
 export type GrassPattern = 'plain' | 'checkerboard' | 'radial' | 'ringed' | 'striped';
