@@ -12,6 +12,7 @@ import type {
   BigPlayInfo,
   FieldPoint,
   InningTransitionInfo,
+  PitcherCardStats,
   RunScoredPopup,
   SceneLineScore,
   ScenePlayer,
@@ -609,6 +610,7 @@ export const buildScene = (
   // batter card, and on-deck indicator always agree with what's on the field.
   const eventsPrefix = events.filter((e) => e.t <= simTime);
   let batterStats: BatterCardStats | null = null;
+  let pitcherStats: PitcherCardStats | null = null;
   let onDeckBatterId: PlayerId | null = null;
   let lineScore: SceneLineScore = {
     innings: [],
@@ -635,6 +637,15 @@ export const buildScene = (
           strikeouts: row.strikeouts,
         };
       }
+    }
+    const pitchersList = half === 'top' ? box.homePitchers : box.awayPitchers;
+    const pRow = pitchersList.find((p) => p.playerId === fieldingPitcherId);
+    if (pRow) {
+      pitcherStats = {
+        pitches: pRow.pitches,
+        balls: pRow.balls,
+        strikes: pRow.strikes,
+      };
     }
     const battingOrder = half === 'top' ? ctx.input.away.battingOrder : ctx.input.home.battingOrder;
     if (currentBatterId) {
@@ -736,6 +747,7 @@ export const buildScene = (
     homeAbbr: ctx.teamAbbr.get(ctx.input.home.teamId) ?? ctx.input.home.teamId,
     awayAbbr: ctx.teamAbbr.get(ctx.input.away.teamId) ?? ctx.input.away.teamId,
     batterStats,
+    pitcherStats,
     onDeckBatterId,
     lineScore,
     lastBigPlay,

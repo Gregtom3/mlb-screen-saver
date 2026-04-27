@@ -12,6 +12,12 @@ export interface BatterCardStats {
   readonly strikeouts: number;
 }
 
+export interface PitcherCardStats {
+  readonly pitches: number;
+  readonly balls: number;
+  readonly strikes: number;
+}
+
 export interface LineScoreInning {
   readonly top: number;
   readonly bottom: number | null;
@@ -141,6 +147,7 @@ export interface SceneState {
   // HUD aggregates. The scene reducer fills these by walking the event
   // prefix and reusing /sim/box-score.ts.
   readonly batterStats: BatterCardStats | null;
+  readonly pitcherStats: PitcherCardStats | null;
   readonly onDeckBatterId: PlayerId | null;
   readonly lineScore: SceneLineScore;
   readonly lastBigPlay: BigPlayInfo | null;

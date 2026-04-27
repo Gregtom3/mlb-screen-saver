@@ -98,6 +98,7 @@ export const drawHud = (
   cursor = drawCount(ctx, cursor, sbY + TIER_1_H + TIER_2_H / 2, scene);
   cursor = drawOuts(ctx, cursor + 22, sbY + TIER_1_H + TIER_2_H / 2, scene);
   cursor = drawBases(ctx, cursor + 22, sbY + TIER_1_H + TIER_2_H / 2, scene);
+  cursor = drawPitcherCount(ctx, cursor + 22, sbY + TIER_1_H + TIER_2_H / 2, scene);
   drawLastPlay(ctx, cursor + 18, t.canvasWidth - 12, sbY + TIER_1_H + TIER_2_H / 2, scene);
 
   drawBatterCard(ctx, t, scene, playerIndex, teams);
@@ -453,6 +454,39 @@ const drawMiniBase = (
   ctx.lineWidth = 1;
   ctx.strokeRect(-7, -7, 14, 14);
   ctx.restore();
+};
+
+// Compact pitcher pill: total pitch count plus balls/strikes split. Kept in
+// the same tier-2 row as count/outs/bases so the whole "live state" line
+// reads left-to-right. Hidden when the active pitcher hasn't thrown yet
+// (e.g. pre-game or right after a pitching change before the first pitch).
+const drawPitcherCount = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  cy: number,
+  scene: SceneState,
+): number => {
+  const ps = scene.pitcherStats;
+  if (!ps || ps.pitches === 0) return x;
+  ctx.font = FONT_LABEL;
+  ctx.fillStyle = COLOR_DIM;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.fillText('P', x, cy);
+  let cursor = x + 12;
+  ctx.font = FONT_VALUE;
+  ctx.fillStyle = COLOR_TEXT;
+  const total = String(ps.pitches);
+  ctx.fillText(total, cursor, cy);
+  cursor += ctx.measureText(total).width + 8;
+  ctx.font = FONT_LABEL;
+  ctx.fillStyle = '#5cb45c';
+  ctx.fillText(`B${ps.balls}`, cursor, cy);
+  cursor += ctx.measureText(`B${ps.balls}`).width + 6;
+  ctx.fillStyle = '#e25e5e';
+  ctx.fillText(`S${ps.strikes}`, cursor, cy);
+  cursor += ctx.measureText(`S${ps.strikes}`).width;
+  return cursor;
 };
 
 const drawLastPlay = (
