@@ -540,6 +540,17 @@ const main = () => {
         g.entry.gameId,
         g.sceneCtx.stadium?.atmosphere.dayGameBias ?? 0.5,
       );
+      // Filter the pre-built full-game timeline to only samples whose source event
+      // has already occurred, so the live WP chart grows in real time.
+      const liveTl = tl
+        ? {
+            ...tl,
+            samples: tl.samples.filter((s) => {
+              const ev = g.events[s.eventIdx];
+              return ev !== undefined && ev.t <= tick;
+            }),
+          }
+        : tl;
       return {
         gameId: g.entry.gameId,
         homeTeamId: g.entry.homeTeamId,
@@ -549,7 +560,7 @@ const main = () => {
         half,
         outs,
         isDay,
-        wpTimeline: tl,
+        wpTimeline: liveTl,
       };
     });
   };
