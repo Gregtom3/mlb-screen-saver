@@ -1,6 +1,7 @@
 import type { Player, PlayerId, Team, TeamId } from '../world/types.js';
 import type {
   BattingLine,
+  BvpLine,
   PitchingLine,
   SeasonAggregates,
   TeamLine,
@@ -108,6 +109,15 @@ export interface LeagueHistory {
   readonly seasons: readonly SeasonRecord[];
   readonly careerBatting: ReadonlyMap<PlayerId, CareerBattingLine>;
   readonly careerPitching: ReadonlyMap<PlayerId, CareerPitchingLine>;
+  /**
+   * Career batter-vs-pitcher matchups, accumulated across every finished
+   * season in `seasons`. Outer key = batterId, inner key = pitcherId. The
+   * live HUD surfaces this as the "vs PITCHER" stat strip on the batter
+   * card whenever the sample size warrants. Note: in-progress (current)
+   * season matchups live in /stats SeasonAggregates.bvpMatchups; this
+   * map is finished seasons only, matching the rest of LeagueHistory.
+   */
+  readonly careerBvp: ReadonlyMap<PlayerId, ReadonlyMap<PlayerId, BvpLine>>;
   readonly retiredPlayers: ReadonlySet<PlayerId>;
   readonly hallOfFame: readonly HallOfFamer[];
   readonly singleSeasonRecords: SingleSeasonRecords;
@@ -276,6 +286,44 @@ const accumulateCareerBatting = (
   }
 };
 
+const accumulateCareerBvp = (
+  career: Map<PlayerId, Map<PlayerId, BvpLine>>,
+  agg: SeasonAggregates,
+): void => {
+  for (const [batterId, inner] of agg.bvpMatchups) {
+    let careerInner = career.get(batterId);
+    if (!careerInner) {
+      careerInner = new Map<PlayerId, BvpLine>();
+      career.set(batterId, careerInner);
+    }
+    for (const [pitcherId, line] of inner) {
+      let row = careerInner.get(pitcherId);
+      if (!row) {
+        row = {
+          batterId,
+          pitcherId,
+          PA: 0, AB: 0, H: 0,
+          doubles: 0, triples: 0, HR: 0, RBI: 0,
+          BB: 0, HBP: 0, SO: 0, SF: 0, SH: 0,
+        };
+        careerInner.set(pitcherId, row);
+      }
+      row.PA += line.PA;
+      row.AB += line.AB;
+      row.H += line.H;
+      row.doubles += line.doubles;
+      row.triples += line.triples;
+      row.HR += line.HR;
+      row.RBI += line.RBI;
+      row.BB += line.BB;
+      row.HBP += line.HBP;
+      row.SO += line.SO;
+      row.SF += line.SF;
+      row.SH += line.SH;
+    }
+  }
+};
+
 const accumulateCareerPitching = (
   career: Map<PlayerId, CareerPitchingLine>,
   agg: SeasonAggregates,
@@ -367,11 +415,13 @@ export const buildLeagueHistory = (input: BuildHistoryInput): LeagueHistory => {
   const seasons: SeasonRecord[] = [];
   const careerBatting = new Map<PlayerId, CareerBattingLine>();
   const careerPitching = new Map<PlayerId, CareerPitchingLine>();
+  const careerBvp = new Map<PlayerId, Map<PlayerId, BvpLine>>();
 
   for (const s of input.seasons) {
     seasons.push(summarizeSeason(s.year, s.agg, input.teams, s.teamGames, input.playerIndex));
     accumulateCareerBatting(careerBatting, s.agg, s.year);
     accumulateCareerPitching(careerPitching, s.agg, s.year);
+    accumulateCareerBvp(careerBvp, s.agg);
   }
 
   // Hall of fame: retired players whose composite career score crosses the
@@ -413,6 +463,7 @@ export const buildLeagueHistory = (input: BuildHistoryInput): LeagueHistory => {
     seasons,
     careerBatting,
     careerPitching,
+    careerBvp,
     retiredPlayers: input.retiredPlayers,
     hallOfFame,
     singleSeasonRecords,

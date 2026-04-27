@@ -2,12 +2,14 @@ import type { AtBatOutcome, GameInput, SimEvent } from '../sim/types.js';
 import type { GameId, PlayerId, Player, Team, TeamId } from '../world/types.js';
 import {
   emptyBattingLine,
+  emptyBvpLine,
   emptyPitchingLine,
   emptySeasonAggregates,
   emptyTeamLine,
   type BattingGameLogEntry,
   type BattingLine,
   type BattingSplitKey,
+  type BvpLine,
   type GameWPTimeline,
   type HitLocation,
   type PitchingGameLogEntry,
@@ -73,6 +75,24 @@ const getOrCreateTeam = (agg: SeasonAggregates, teamId: TeamId): TeamLine => {
   if (!line) {
     line = emptyTeamLine(teamId);
     agg.teams.set(teamId, line);
+  }
+  return line;
+};
+
+const getOrCreateBvpLine = (
+  agg: SeasonAggregates,
+  batterId: PlayerId,
+  pitcherId: PlayerId,
+): BvpLine => {
+  let inner = agg.bvpMatchups.get(batterId);
+  if (!inner) {
+    inner = new Map();
+    agg.bvpMatchups.set(batterId, inner);
+  }
+  let line = inner.get(pitcherId);
+  if (!line) {
+    line = emptyBvpLine(batterId, pitcherId);
+    inner.set(pitcherId, line);
   }
   return line;
 };
@@ -451,6 +471,24 @@ export const aggregateGame = (
         // Top-line + per-game.
         foldAtBat(bLine, eff, ev.rbis, 0);
         foldPitcherAtBat(pLine, eff, ev.outcome, abRunsScored);
+
+        // Batter-vs-pitcher matchup row. Folds the same per-AB effects
+        // into a slim counter line keyed by (batterId, pitcherId). The
+        // live HUD reads this to show a "vs this pitcher" stat strip
+        // whenever the sample size is meaningful.
+        const bvp = getOrCreateBvpLine(agg, currentBatterId, fieldingPitcher);
+        bvp.PA += 1;
+        if (eff.atBatCounts) bvp.AB += 1;
+        bvp.H += eff.hits;
+        bvp.doubles += eff.doubles;
+        bvp.triples += eff.triples;
+        bvp.HR += eff.homeRuns;
+        bvp.RBI += ev.rbis;
+        bvp.BB += eff.walks;
+        bvp.HBP += eff.hbp;
+        bvp.SO += eff.strikeouts;
+        bvp.SF += eff.sacFlies;
+        bvp.SH += eff.sacBunts;
 
         // Per-game row.
         const bRow = ensureBattingRow(

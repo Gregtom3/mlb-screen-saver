@@ -13,6 +13,33 @@ export interface BatterCardStats {
   readonly strikeouts: number;
 }
 
+// Season top-line for the active batter. Surfaced on the HUD batter card
+// next to the current-game H/AB. Computed at scene-build time from the
+// SeasonAggregates passed in via SceneContext.
+export interface SeasonBatterStats {
+  readonly avg: number; // 0..1
+  readonly homeRuns: number;
+  readonly rbi: number;
+  readonly hits: number;
+  readonly atBats: number;
+}
+
+// All-time matchup line: this batter vs the current pitcher, accumulated
+// across every completed game (prior seasons via LeagueHistory.careerBvp
+// PLUS the current season's finished games via SeasonAggregates.bvpMatchups).
+// Only surfaced on the HUD when PA >= the display threshold so we don't
+// show "1-1 1.000" after a single past matchup.
+export interface BvpStats {
+  readonly pitcherId: PlayerId;
+  readonly plateAppearances: number;
+  readonly atBats: number;
+  readonly hits: number;
+  readonly homeRuns: number;
+  readonly rbi: number;
+  readonly walks: number;
+  readonly strikeouts: number;
+}
+
 export interface PitcherCardStats {
   readonly pitches: number;
   readonly balls: number;
@@ -172,6 +199,13 @@ export interface SceneState {
   // HUD aggregates. The scene reducer fills these by walking the event
   // prefix and reusing /sim/box-score.ts.
   readonly batterStats: BatterCardStats | null;
+  // Active batter's season top line (AVG/HR/RBI). Null when SceneContext
+  // wasn't given a SeasonAggregates (legacy callers, scene tests).
+  readonly seasonBatterStats: SeasonBatterStats | null;
+  // All-time matchup line for the active batter vs the current pitcher.
+  // Null when SceneContext lacks aggregates, when no batter is up, or
+  // when the pair has never met before.
+  readonly bvpStats: BvpStats | null;
   readonly pitcherStats: PitcherCardStats | null;
   readonly onDeckBatterId: PlayerId | null;
   readonly strikeZone: StrikeZoneViewerInfo | null;

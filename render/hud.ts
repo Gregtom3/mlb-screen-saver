@@ -1,6 +1,7 @@
 import type { SceneState } from './types.js';
 import type { FieldTransform } from './transform.js';
-import type { Player, PlayerId, TeamId } from '../world/types.js';
+import type { Player, PlayerId, Team, TeamId } from '../world/types.js';
+import { drawPortrait } from '../ui/portrait.js';
 
 interface TeamStanding {
   readonly wins: number;
@@ -39,11 +40,16 @@ const TIER_2_H = SCOREBUG_HEIGHT - TIER_1_H;
 // above the bar in a flex column), so this is just a small breathing
 // margin within the canvas — not a clearance for an overlay.
 const PANEL_BOTTOM_INSET = 14;
-const PANEL_HEIGHT = 78;
+// Bumped from 78 → 102 in the batter-card pass: the card now stacks a
+// portrait + name/pos + current-game line + season top-line + optional
+// "vs PITCHER" matchup line, which doesn't fit in 78. The strike-zone
+// viewer and line-score panels share this height; their internal layout
+// already handled extra room gracefully.
+const PANEL_HEIGHT = 102;
 // Narrow-canvas panels grow vertically so the strike-zone grid and line
 // score stay legible at DPR=2, where a 78-canvas-px tall panel paints
 // only ~39 CSS px on screen. 130 canvas px ⇒ ~65 CSS px on most phones.
-const PANEL_HEIGHT_NARROW = 130;
+const PANEL_HEIGHT_NARROW = 154;
 const BATTER_CARD_W = 240;
 const LINE_SCORE_W = 320;
 const ZONE_PANEL_W = 96;
@@ -176,7 +182,7 @@ export const drawHud = (
         fontLineHeader: FONT_LINE_HEADER,
         fontLineValue: FONT_LINE_VALUE,
       };
-  drawBatterCard(ctx, t, scene, playerIndex, teams, layout);
+  drawBatterCard(ctx, t, scene, playerIndex, teams, layout, extras);
   drawStrikeZoneViewer(ctx, t, scene, layout);
   drawLineScore(ctx, t, scene, teams, layout);
 
@@ -588,6 +594,19 @@ const drawLastPlay = (
 
 // =================================================== bottom panels =====
 
+// Below this PA threshold we don't surface the "vs PITCHER" matchup line.
+// Single-AB matchups read as misleading noise (1-1, .1000), and 2 isn't
+// much better. 3 PAs is when the line starts feeling earned.
+const BVP_DISPLAY_THRESHOLD_PA = 3;
+
+const formatAvg = (avg: number): string => {
+  // ".312" — drop the leading zero, three decimals. Standard baseball-card
+  // format. Anything >= 1.000 (impossible normally; defensive) keeps the 1.
+  const rounded = Math.round(avg * 1000) / 1000;
+  if (rounded >= 1) return rounded.toFixed(3);
+  return rounded.toFixed(3).replace(/^0/, '');
+};
+
 const drawBatterCard = (
   ctx: CanvasRenderingContext2D,
   t: FieldTransform,
@@ -595,18 +614,28 @@ const drawBatterCard = (
   playerIndex: ReadonlyMap<PlayerId, Player>,
   teams: { away: TeamBugInfo; home: TeamBugInfo },
   layout: BottomLayout,
+  extras: HudExtras,
 ): void => {
   const x = layout.marginX;
   const h = layout.panelHeight;
   const y = t.canvasHeight - h - PANEL_BOTTOM_INSET;
   const w = layout.batterW;
   const padX = layout.narrow ? 10 : 12;
-  // Vertical anchor offsets — slightly different for the taller narrow card
-  // so the heading, name, position, and stat line all spread out evenly.
-  const headingY = layout.narrow ? 10 : 8;
-  const nameY = layout.narrow ? 36 : 24;
-  const subY = layout.narrow ? 64 : 44;
-  const statY = layout.narrow ? 92 : 60;
+  const padY = 10;
+  // Layout: heading top, portrait + name/pos in the next strip, then up to
+  // three stacked stat lines below the portrait. The narrow (phone) card is
+  // taller so the rows can breathe; constants below split the difference.
+  const portraitSize = layout.narrow ? 32 : 36;
+  const headingY = padY - 2;
+  const portraitY = headingY + 14;
+  const portraitX = x + padX;
+  const textColX = portraitX + portraitSize + 8;
+  const nameY = portraitY + 2;
+  const subY = nameY + 18;
+  const gameStatY = portraitY + portraitSize + 6;
+  const seasonStatY = gameStatY + 14;
+  const bvpStatY = seasonStatY + 14;
+
   // Background.
   ctx.fillStyle = COLOR_PANEL;
   ctx.fillRect(x, y, w, h);
@@ -621,28 +650,20 @@ const drawBatterCard = (
   ctx.textAlign = 'left';
   ctx.fillText('AT BAT', x + padX, y + headingY);
 
-  // Nothing yet?
   if (scene.phase === 'pre-game' || scene.phase === 'final') {
     ctx.font = layout.fontSmall;
     ctx.fillStyle = COLOR_DIM;
-    ctx.fillText(scene.phase === 'pre-game' ? 'pre-game' : 'final', x + padX, y + nameY);
+    ctx.fillText(
+      scene.phase === 'pre-game' ? 'pre-game' : 'final',
+      x + padX,
+      y + nameY,
+    );
     return;
   }
 
-  // Determine current batter id from the lineup using innings + outs as a
-  // proxy isn't reliable — instead, the scene reducer hands us batterStats
-  // for the active batter. We need the player id too, which we can derive
-  // from the on-deck calculation: the batter currently up is the one whose
-  // baserunner-event hasn't fired AND who's the previous lineup slot of the
-  // on-deck. Simpler: pass currentBatterId via scene if we want this clean —
-  // for now, look up the batter via the on-deck index minus one.
-  const battingTeamColors = scene.half === 'top' ? teams.away : teams.home;
-  const battingOrder = scene.half === 'top'
-    ? scene.awayTeamId // we don't have direct order here — read from teams below
-    : scene.homeTeamId;
-  void battingOrder;
-
-  // Resolve the active batter id: prefer the batter sprite's id (on-screen).
+  const battingTeamBug = scene.half === 'top' ? teams.away : teams.home;
+  const battingTeamId = scene.half === 'top' ? scene.awayTeamId : scene.homeTeamId;
+  const battingTeamColors = extras.teamColors.get(battingTeamId);
   const activeBatterId = scene.batter?.id ?? null;
   const batter = activeBatterId ? playerIndex.get(activeBatterId) : null;
 
@@ -654,8 +675,26 @@ const drawBatterCard = (
   }
 
   // Team color stripe down the left edge of the card.
-  ctx.fillStyle = battingTeamColors.primary;
+  ctx.fillStyle = battingTeamBug.primary;
   ctx.fillRect(x, y, 4, h);
+
+  // Portrait — pixel-art face, seeded by player id, tinted with the
+  // batter's team colors. Reuses the /ui portrait helper so the canvas HUD
+  // and the DOM player-detail menu show the same face. drawPortrait paints
+  // from (0, 0) of the current context, so translate the origin first.
+  ctx.save();
+  ctx.translate(portraitX, y + portraitY);
+  if (battingTeamColors) {
+    drawPortrait(ctx, batter, { colors: battingTeamColors }, portraitSize);
+  } else {
+    ctx.fillStyle = '#202830';
+    ctx.fillRect(0, 0, portraitSize, portraitSize);
+  }
+  ctx.restore();
+
+  // Reset baseline + alignment for text below.
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
 
   // Batter name + position. On narrow viewports the first name compresses
   // to an initial so the surname always fits.
@@ -664,20 +703,54 @@ const drawBatterCard = (
     : `${batter.firstName} ${batter.lastName}`;
   ctx.font = layout.fontBig;
   ctx.fillStyle = COLOR_TEXT;
-  ctx.fillText(displayName, x + padX, y + nameY);
+  ctx.fillText(displayName, textColX, y + nameY);
   ctx.font = layout.fontSmall;
   ctx.fillStyle = COLOR_DIM;
-  ctx.fillText(`${batter.primaryPosition}  ${batter.bats}/${batter.throws}`, x + padX, y + subY);
+  ctx.fillText(
+    `${batter.primaryPosition}  ${batter.bats}/${batter.throws}`,
+    textColX,
+    y + subY,
+  );
 
-  // Current-game line: H-for-AB (HR, RBI). Phase 1 doesn't track season yet.
+  // Current-game line: H-for-AB (HR, RBI).
   if (scene.batterStats) {
     const s = scene.batterStats;
-    const line = `${s.hits}-for-${s.atBats}` +
-      (s.homeRuns > 0 ? `  ${s.homeRuns} HR` : '') +
-      (s.rbis > 0 ? `  ${s.rbis} RBI` : '');
+    const line =
+      `Game: ${s.hits}-${s.atBats}` +
+      (s.homeRuns > 0 ? `  ${s.homeRuns}HR` : '') +
+      (s.rbis > 0 ? `  ${s.rbis}RBI` : '');
     ctx.font = layout.fontSmall;
     ctx.fillStyle = COLOR_TEXT;
-    ctx.fillText(line, x + padX, y + statY);
+    ctx.fillText(line, x + padX, y + gameStatY);
+  }
+
+  // Season top-line: AVG  HR  RBI. Always shown when aggregates are wired
+  // in (which they are in the live screensaver; tests/ad-hoc fixtures fall
+  // back to omitting this line gracefully).
+  if (scene.seasonBatterStats) {
+    const s = scene.seasonBatterStats;
+    const line = `Season: ${formatAvg(s.avg)}  ${s.homeRuns}HR  ${s.rbi}RBI`;
+    ctx.font = layout.fontSmall;
+    ctx.fillStyle = COLOR_TEXT;
+    ctx.fillText(line, x + padX, y + seasonStatY);
+  }
+
+  // All-time matchup line vs the current pitcher. Only surface it once
+  // the sample is meaningful — single-PA matchups are noise.
+  if (
+    scene.bvpStats &&
+    scene.bvpStats.plateAppearances >= BVP_DISPLAY_THRESHOLD_PA
+  ) {
+    const bvp = scene.bvpStats;
+    const pitcher = playerIndex.get(bvp.pitcherId);
+    const pitcherTag = pitcher ? `vs ${pitcher.lastName}` : 'vs PITCHER';
+    const avg = bvp.atBats > 0 ? bvp.hits / bvp.atBats : 0;
+    const line =
+      `${pitcherTag}: ${bvp.hits}-${bvp.atBats}  ${formatAvg(avg)}` +
+      (bvp.homeRuns > 0 ? `  ${bvp.homeRuns}HR` : '');
+    ctx.font = layout.fontSmall;
+    ctx.fillStyle = COLOR_ACCENT;
+    ctx.fillText(line, x + padX, y + bvpStatY);
   }
 
   // On-deck — desktop only; the narrow card doesn't have room.
@@ -687,7 +760,7 @@ const drawBatterCard = (
       ctx.font = layout.fontSmall;
       ctx.fillStyle = COLOR_DIM;
       ctx.textAlign = 'right';
-      ctx.fillText(`on deck: ${onDeck.lastName}`, x + w - padX, y + statY);
+      ctx.fillText(`on deck: ${onDeck.lastName}`, x + w - padX, y + subY);
     }
   }
 };
