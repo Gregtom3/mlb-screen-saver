@@ -61,8 +61,8 @@ const pickInfieldPosition = (spray: number): Position => {
 };
 
 const pickOutfieldPosition = (spray: number): Position => {
-  if (spray < -15) return 'LF';
-  if (spray < 15) return 'CF';
+  if (spray < -10) return 'LF';
+  if (spray < 10) return 'CF';
   return 'RF';
 };
 

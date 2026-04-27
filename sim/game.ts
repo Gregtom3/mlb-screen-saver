@@ -376,9 +376,12 @@ const pickInfieldPosition = (spray: number): Position => {
   return '1B';
 };
 
+// Tighter CF band than naive equal thirds because the triangular spray
+// distribution (peaked at 0deg) would otherwise hand center field >55% of
+// outfield chances. Real MLB CF gets ~38-40%; this lands in that range.
 const pickOutfieldPosition = (spray: number): Position => {
-  if (spray < -15) return 'LF';
-  if (spray < 15) return 'CF';
+  if (spray < -10) return 'LF';
+  if (spray < 10) return 'CF';
   return 'RF';
 };
 
