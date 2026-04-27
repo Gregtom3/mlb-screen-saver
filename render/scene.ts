@@ -11,10 +11,12 @@ import type {
   BatterCardStats,
   BigPlayInfo,
   FieldPoint,
+  InningTransitionInfo,
   RunScoredPopup,
   SceneLineScore,
   ScenePlayer,
   SceneState,
+  VictoryCelebration,
 } from './types.js';
 import { buildBoxScore } from '../sim/box-score.js';
 import {
@@ -70,6 +72,30 @@ const RUN_SCORED_POPUP_TICKS = 18;
 // were retired (1B-side for righty grounders, 3B-side for lefty / triples).
 const DUGOUT_RIGHT: FieldPoint = { x: 75, y: -22 };
 const DUGOUT_LEFT: FieldPoint = { x: -75, y: -22 };
+
+// Inning transition pacing. The walk-off starts in the dead time after the
+// 3rd-out play choreo settles and runs up to the inningEnd event; the
+// walk-on runs from inningEnd up until just before the next half-inning's
+// first pitch (which fires at inningEnd.t + TIME_PITCH = 25 in sim time).
+const INNING_WALK_OFF_TICKS = 14;
+const INNING_WALK_ON_TICKS = 18;
+
+// Pixel-art high-five line for the winning team. Two staggered ranks
+// straddle the area between the mound and second base. The renderer
+// pulses a cheer wave through the line off the elapsed time.
+const VICTORY_LINE_POSITIONS: readonly FieldPoint[] = [
+  { x: -50, y: 100 },
+  { x: -25, y: 100 },
+  { x: 0, y: 100 },
+  { x: 25, y: 100 },
+  { x: 50, y: 100 },
+  { x: -38, y: 122 },
+  { x: -13, y: 122 },
+  { x: 13, y: 122 },
+  { x: 38, y: 122 },
+];
+// How long the winning team takes to walk in from their dugout to the line.
+const VICTORY_WALK_IN_TICKS = 30;
 
 interface SceneContext {
   readonly input: GameInput;
@@ -232,8 +258,34 @@ export const buildScene = (
   let lastBigPlay: BigPlayInfo | null = null;
   const runsScoredPopups: RunScoredPopup[] = [];
 
+  // Most recent inningEnd event, captured at the moment we apply it, plus
+  // the fielding side that was on the field BEFORE the half flipped. The
+  // walk-on phase reads this to know who's heading back to the dugout
+  // (visible alongside the incoming team during the cross-fade).
+  let lastInningEnd: {
+    readonly t: number;
+    readonly outgoingFieldingSide: 'home' | 'away';
+  } | null = null;
+  // Game-over capture: who won, and when. Drives the high-five line.
+  let gameEnd: {
+    readonly t: number;
+    readonly winnerSide: 'home' | 'away';
+  } | null = null;
+  // Lookahead: if the next event past simTime is an inningEnd that's close
+  // enough, we're in the walk-off window.
+  let upcomingInningEnd: number | null = null;
+
   for (const ev of events) {
-    if (ev.t > simTime) break;
+    if (ev.t > simTime) {
+      // Lookahead for the imminent walk-off. The sim leaves a 60-tick gap
+      // with no events between the 3rd-out atBatEnd and the inningEnd, so
+      // the next event past simTime IS the upcoming inningEnd whenever
+      // we're in that gap.
+      if (ev.kind === 'inningEnd' && ev.t - simTime <= INNING_WALK_OFF_TICKS) {
+        upcomingInningEnd = ev.t;
+      }
+      break;
+    }
     switch (ev.kind) {
       case 'gameStart':
         phase = 'live';
@@ -332,17 +384,40 @@ export const buildScene = (
         outs = 0;
         balls = 0;
         strikes = 0;
+        // Capture the side that was just fielding so the walk-on phase can
+        // still draw them retreating to their dugout while the new fielders
+        // jog out.
+        const outgoingFieldingSide: 'home' | 'away' = half === 'top' ? 'home' : 'away';
+        lastInningEnd = { t: ev.t, outgoingFieldingSide };
+        // Stale lookahead: once we've consumed the inningEnd we're past
+        // its walk-off window.
+        upcomingInningEnd = null;
         if (ev.halfInning === 'top') {
           half = 'bottom';
         } else {
           inning += 1;
           half = 'top';
         }
+        // Cancel any in-flight pitch/contact state so the renderer doesn't
+        // try to draw a stale ball during the inning gap.
+        lastPitch = null;
+        lastContact = null;
+        lastContactT = null;
         break;
       }
-      case 'gameEnd':
+      case 'gameEnd': {
         phase = 'final';
+        const winnerSide: 'home' | 'away' =
+          ev.finalRuns.home >= ev.finalRuns.away ? 'home' : 'away';
+        gameEnd = { t: ev.t, winnerSide };
+        // Suppress any leftover pitch / contact / inning-transition art
+        // from the final out so the high-five line owns the screen.
+        lastPitch = null;
+        lastContact = null;
+        lastContactT = null;
+        lastInningEnd = null;
         break;
+      }
     }
   }
 
@@ -363,13 +438,47 @@ export const buildScene = (
     lastContactT !== null ? choreos.get(lastContactT) : undefined;
   const choreoActive = activeChoreo !== undefined && simTime < activeChoreo.endT;
 
+  // Inning transition: blocks live action during the inning gap so fielders
+  // walk off (before inningEnd) and walk on (after). Walk-off and walk-on
+  // share the role of overriding fielder positions; the renderer doesn't
+  // need to know which side is on the field, only how to interpolate.
+  let inningTransition: InningTransitionInfo | null = null;
+  if (gameEnd === null) {
+    if (
+      upcomingInningEnd !== null &&
+      upcomingInningEnd - simTime <= INNING_WALK_OFF_TICKS &&
+      upcomingInningEnd - simTime >= 0
+    ) {
+      const progress =
+        1 - (upcomingInningEnd - simTime) / INNING_WALK_OFF_TICKS;
+      inningTransition = { phase: 'walk-off', progress };
+    } else if (
+      lastInningEnd !== null &&
+      simTime - lastInningEnd.t <= INNING_WALK_ON_TICKS &&
+      simTime - lastInningEnd.t >= 0
+    ) {
+      const progress = (simTime - lastInningEnd.t) / INNING_WALK_ON_TICKS;
+      inningTransition = { phase: 'walk-on', progress };
+    }
+  }
+
   // Pull a possibly-overridden position for the given fielder. Used uniformly
   // for pitcher, catcher, and the seven position players so any of them can
-  // be choreographed (e.g. pitcher covering 1B, catcher in front of plate).
+  // be choreographed (e.g. pitcher covering 1B, catcher in front of plate),
+  // or — during the inning gap — sent on or off the field along a straight
+  // path to the nearest dugout.
   const fielderPosFor = (
     playerId: string,
     homePos: FieldPoint,
   ): FieldPoint => {
+    if (inningTransition) {
+      const dugout = homePos.x >= 0 ? DUGOUT_RIGHT : DUGOUT_LEFT;
+      const eased = easeInOut(inningTransition.progress);
+      if (inningTransition.phase === 'walk-off') {
+        return lerpPoint(homePos, dugout, eased);
+      }
+      return lerpPoint(dugout, homePos, eased);
+    }
     if (!choreoActive || !activeChoreo) return homePos;
     const overridden = fielderPositionForChoreo(activeChoreo, simTime, playerId);
     return overridden ?? homePos;
@@ -414,11 +523,14 @@ export const buildScene = (
 
   // Batter sprite at the box. Hidden once the batter has fired a baserunner
   // event in this half-inning — otherwise we'd render them at the box AND
-  // as a runner ("the dupe"). Swing animation only fires on actual swing
-  // pitches; a take leaves the bat in ready stance.
+  // as a runner ("the dupe"). Also hidden during the inning gap and after
+  // the game's over so the field is clear for the walk-on / high-five line.
+  // Swing animation only fires on actual swing pitches; a take leaves the
+  // bat in ready stance.
   const batterIsRunner = currentBatterId !== null && runnerLatest.has(currentBatterId);
+  const fieldIsClearOfBatter = inningTransition !== null || gameEnd !== null;
   let batterScene: ScenePlayer | null = null;
-  if (batter && phase === 'live' && !batterIsRunner) {
+  if (batter && phase === 'live' && !batterIsRunner && !fieldIsClearOfBatter) {
     const boxX = batter.bats === 'L' ? 4.5 : -4.5;
     let swingFrac = 0;
     if (lastPitch && lastPitch.wasSwing) {
@@ -443,25 +555,32 @@ export const buildScene = (
   }
 
   // Runners: for each occupied base (or scored runner still in motion), use latest event.
+  // Hidden during inning transitions (the half cleared its bases on inningEnd
+  // anyway) and once the game's over (the high-five line owns the screen).
   const runners: ScenePlayer[] = [];
   // Note: the batter-as-runner appears here once a baserunner event fires for them.
-  for (const [runnerId, latest] of runnerLatest) {
-    const render = computeRunnerRender(latest, simTime, runnerId);
-    if (!render.stillVisible) continue;
-    runners.push({
-      id: runnerId,
-      role: 'runner',
-      position: render.position,
-      primaryColor: battingColors.primary,
-      secondaryColor: battingColors.secondary,
-    });
+  if (inningTransition === null && gameEnd === null) {
+    for (const [runnerId, latest] of runnerLatest) {
+      const render = computeRunnerRender(latest, simTime, runnerId);
+      if (!render.stillVisible) continue;
+      runners.push({
+        id: runnerId,
+        role: 'runner',
+        position: render.position,
+        primaryColor: battingColors.primary,
+        secondaryColor: battingColors.secondary,
+      });
+    }
   }
 
   // Ball state — position (ground projection), height (for 2.5D), visibility,
-  // and whether it's currently in flight (drives shadow rendering).
+  // and whether it's currently in flight (drives shadow rendering). The
+  // ball is parked off-screen during inning transitions and after the
+  // final out so neither the inning-gap walk nor the high-five line gets
+  // a stray pellet sitting on the mound.
   let ballPos: FieldPoint = PITCHERS_MOUND;
   let ballHeight = 0;
-  let ballVisible = phase === 'live';
+  let ballVisible = phase === 'live' && inningTransition === null && gameEnd === null;
   let ballInFlight = false;
 
   if (lastContact && choreoActive && activeChoreo) {
@@ -526,6 +645,69 @@ export const buildScene = (
     }
   }
 
+  // Post-game: build the high-five line. We replace the regular fielders
+  // with the winning team's nine, walking them in from their dugout for a
+  // beat and then pulsing a cheer wave down the line. Bookkeeping above
+  // (scoreHome, scoreAway, lineScore, etc.) is unaffected.
+  let victory: VictoryCelebration | null = null;
+  let displayPitcher: ScenePlayer | null =
+    fielders.find((f) => f.role === 'pitcher') ?? null;
+  let displayCatcher: ScenePlayer | null = catcher;
+  let displayFielders: readonly ScenePlayer[] = fielders.filter(
+    (f) => f.role !== 'pitcher' && f.role !== 'catcher',
+  );
+  if (gameEnd !== null) {
+    const winnerSide = gameEnd.winnerSide;
+    const winnerTeamId =
+      winnerSide === 'home' ? ctx.input.home.teamId : ctx.input.away.teamId;
+    const losingTeamId =
+      winnerSide === 'home' ? ctx.input.away.teamId : ctx.input.home.teamId;
+    const elapsed = simTime - gameEnd.t;
+    victory = { winnerTeamId, losingTeamId, elapsed };
+    const winnerColors = ctx.teamColors.get(winnerTeamId);
+    if (winnerColors) {
+      const winnerPitcherId =
+        winnerSide === 'home' ? homePitcherId : awayPitcherId;
+      const winnerLineupIds =
+        winnerSide === 'home'
+          ? ctx.input.home.battingOrder
+          : ctx.input.away.battingOrder;
+      const winnerIds = [winnerPitcherId, ...winnerLineupIds].slice(0, 9);
+      const walkProgress = Math.max(
+        0,
+        Math.min(1, elapsed / VICTORY_WALK_IN_TICKS),
+      );
+      const walkInEased = easeInOut(walkProgress);
+      const settled = walkProgress >= 1;
+
+      const linePlayers: ScenePlayer[] = [];
+      for (let i = 0; i < winnerIds.length; i++) {
+        const pid = winnerIds[i]!;
+        const linePos = VICTORY_LINE_POSITIONS[i] ?? VICTORY_LINE_POSITIONS[0]!;
+        const dugout = linePos.x >= 0 ? DUGOUT_RIGHT : DUGOUT_LEFT;
+        const pos = lerpPoint(dugout, linePos, walkInEased);
+        const cheerFrac = settled
+          ? cheerWave(elapsed - VICTORY_WALK_IN_TICKS, i)
+          : 0;
+        // Role-tag the first as pitcher and second as catcher so the
+        // existing draw order in /sprites picks them up uniformly.
+        const role: ScenePlayer['role'] =
+          i === 0 ? 'pitcher' : i === 1 ? 'catcher' : 'fielder';
+        linePlayers.push({
+          id: pid,
+          role,
+          position: pos,
+          primaryColor: winnerColors.primary,
+          secondaryColor: winnerColors.secondary,
+          cheerFrac,
+        });
+      }
+      displayPitcher = linePlayers[0] ?? null;
+      displayCatcher = linePlayers[1] ?? null;
+      displayFielders = linePlayers.slice(2);
+    }
+  }
+
   return {
     phase,
     inning,
@@ -540,10 +722,10 @@ export const buildScene = (
       second: bases.second !== null,
       third: bases.third !== null,
     },
-    pitcher: fielders.find((f) => f.role === 'pitcher') ?? null,
+    pitcher: displayPitcher,
     batter: batterScene,
-    catcher,
-    fielders: fielders.filter((f) => f.role !== 'pitcher' && f.role !== 'catcher'),
+    catcher: displayCatcher,
+    fielders: displayFielders,
     runners,
     ball: { position: ballPos, heightFt: ballHeight, visible: ballVisible, inFlight: ballInFlight },
     lastPlay,
@@ -561,8 +743,29 @@ export const buildScene = (
       const age = simTime - r.firedAtT;
       return age >= 0 && age <= RUN_SCORED_POPUP_TICKS;
     }),
+    inningTransition,
+    victory,
     simTime,
   };
+};
+
+// Smoothstep — runners bunching up if you lerp linearly from far apart;
+// the easing softens both the launch out of the dugout and the arrival.
+const easeInOut = (t: number): number => {
+  const u = Math.max(0, Math.min(1, t));
+  return u * u * (3 - 2 * u);
+};
+
+// Periodic raised-arm wave through the high-five line. Each player's cheer
+// peaks at a staggered phase, so the screensaver always has something
+// gently rolling across the screen even after the action stops.
+const cheerWave = (elapsedAfterWalkIn: number, lineIndex: number): number => {
+  if (elapsedAfterWalkIn < 0) return 0;
+  const phase = elapsedAfterWalkIn * 0.32 - lineIndex * 0.7;
+  const raw = Math.sin(phase);
+  // Compress to a sharper peak — most of the time arms are down, with a
+  // quick raise as the wave passes.
+  return Math.max(0, raw) ** 1.4;
 };
 
 // Decides whether an outcome triggers the on-field popup, what label to

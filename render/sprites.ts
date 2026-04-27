@@ -134,14 +134,43 @@ const drawPlayer = (
     ctx.moveTo(s.x + handleX, cy + handleY);
     ctx.lineTo(s.x + tipX, cy + tipY);
     ctx.stroke();
-  } else if (p.role === 'pitcher') {
+  } else if (p.role === 'pitcher' && (p.cheerFrac ?? 0) === 0) {
     // Rubber strip drawn at the GROUND, not bobbed (it's a fixed mark on the field).
+    // Skip for the winning pitcher in the high-five line — they're not on
+    // the rubber, they're at second base celebrating.
     ctx.fillStyle = '#f3eedb';
     ctx.fillRect(
       Math.floor(s.x - pixelSize * 3),
       Math.floor(s.y + pixelSize * 6),
       Math.ceil(pixelSize * 6),
       Math.max(1, Math.ceil(pixelSize * 0.6)),
+    );
+  }
+
+  // Hand-raise gesture for the post-game high-five line. Drawn as a small
+  // arm + open hand reaching above the cap, in the team's primary color so
+  // it reads as part of the player.
+  const cheerFrac = p.cheerFrac ?? 0;
+  if (cheerFrac > 0.05) {
+    const armLen = pixelSize * (4 + cheerFrac * 2);
+    const armW = Math.max(1.2, pixelSize * 0.9);
+    const armX = s.x;
+    const armBaseY = cy - pixelSize * 4;
+    ctx.strokeStyle = p.primaryColor;
+    ctx.lineWidth = armW;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(armX, armBaseY);
+    ctx.lineTo(armX, armBaseY - armLen);
+    ctx.stroke();
+    // Open hand: small skin-tone square at the tip.
+    ctx.fillStyle = SKIN_COLOR;
+    const handSize = Math.max(2, Math.ceil(pixelSize * 1.4));
+    ctx.fillRect(
+      Math.round(armX - handSize / 2),
+      Math.round(armBaseY - armLen - handSize / 2),
+      handSize,
+      handSize,
     );
   }
 };
