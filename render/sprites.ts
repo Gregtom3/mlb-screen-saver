@@ -120,7 +120,12 @@ const drawPlayer = (
   drawPixelSprite(ctx, PLAYER_SPRITE, s.x, cy, pixelSize, p.primaryColor, p.secondaryColor);
 
   // Role-specific accents — anchored to the bobbed sprite center.
-  if (p.role === 'batter') {
+  if (p.role === 'batter' || p.role === 'on-deck') {
+    // Batter (in box) and on-deck batter (warmup swing at on-deck circle)
+    // both carry a bat. Direction faces home plate: at the box that's
+    // determined by which side of home plate the player stands on; at the
+    // on-deck circle (also off to one side of home plate) the same x-sign
+    // rule still gives a sensible bat direction.
     const dir = p.position.x < 0 ? -1 : 1;
     const swingFrac = p.swingFrac ?? 0;
     const tipReady = { x: -dir * pixelSize * 1.5, y: -pixelSize * 7 };
@@ -222,14 +227,17 @@ const drawBall = (
 
 // Returns every on-field player in a stable iteration order, used both for
 // drawing labels and for hover hit-testing. Catcher first → fielders →
-// pitcher → runners → batter so visual stacking matches input precedence:
-// when sprites overlap, the topmost-drawn player wins the hover.
+// pitcher → runners → outgoing batter → on-deck batter → batter so visual
+// stacking matches input precedence: when sprites overlap, the topmost-
+// drawn player wins the hover.
 const visiblePlayers = (scene: SceneState): readonly ScenePlayer[] => {
   const out: ScenePlayer[] = [];
   if (scene.catcher) out.push(scene.catcher);
   for (const f of scene.fielders) out.push(f);
   if (scene.pitcher) out.push(scene.pitcher);
   for (const r of scene.runners) out.push(r);
+  if (scene.outgoingBatter) out.push(scene.outgoingBatter);
+  if (scene.onDeckBatter) out.push(scene.onDeckBatter);
   if (scene.batter) out.push(scene.batter);
   return out;
 };
@@ -320,6 +328,8 @@ export const drawScene = (
   for (const f of scene.fielders) drawPlayer(ctx, t, f, simTime);
   if (scene.pitcher) drawPlayer(ctx, t, scene.pitcher, simTime);
   for (const r of scene.runners) drawPlayer(ctx, t, r, simTime);
+  if (scene.outgoingBatter) drawPlayer(ctx, t, scene.outgoingBatter, simTime);
+  if (scene.onDeckBatter) drawPlayer(ctx, t, scene.onDeckBatter, simTime);
   if (scene.batter) drawPlayer(ctx, t, scene.batter, simTime);
   drawBall(ctx, t, scene);
 

@@ -13,5 +13,10 @@ export {
   slide,
   strike3Call,
   batSnap,
+  ballToss,
 } from './sfx.js';
-export { createSfxDispatcher, type SfxDispatcher } from './dispatcher.js';
+export {
+  createSfxDispatcher,
+  type AnimAudioCue,
+  type SfxDispatcher,
+} from './dispatcher.js';

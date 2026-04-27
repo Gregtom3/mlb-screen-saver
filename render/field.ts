@@ -79,8 +79,10 @@ export interface FieldDrawOptions {
   // Current inning (1..9). Drives crowd density per the curve. Defaults to
   // 1 if absent.
   readonly inning?: number;
-  // Home team's primary color — tints the dugout trim. Optional.
+  // Home team's primary color — tints the 1B-side dugout trim. Optional.
   readonly homeTeamPrimary?: string;
+  // Away team's primary color — tints the 3B-side dugout trim. Optional.
+  readonly awayTeamPrimary?: string;
 }
 
 // Lighten/darken an #rrggbb hex by a delta (-1..1).
@@ -261,11 +263,10 @@ export const drawField = (
 
   // ---- Layer 9: backstop, dugouts, batter's boxes, on-deck circles -------
   drawBackstop(ctx, t);
-  drawDugouts(
-    ctx,
-    t,
-    options.homeTeamPrimary ? { trimColor: options.homeTeamPrimary } : {},
-  );
+  drawDugouts(ctx, t, {
+    ...(options.homeTeamPrimary ? { homeTrimColor: options.homeTeamPrimary } : {}),
+    ...(options.awayTeamPrimary ? { awayTrimColor: options.awayTeamPrimary } : {}),
+  });
   drawBatterBoxes(ctx, t);
   drawOnDeckCircles(ctx, t);
 

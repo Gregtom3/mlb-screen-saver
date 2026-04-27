@@ -221,6 +221,41 @@ export function slide(when = 0): void {
   rumble.stop(t0 + 0.5);
 }
 
+/** Ball toss: light leather whoosh + soft glove pat. Used for casual inter-pitch / inter-inning ball flips and the "around-the-horn" sequence after a strikeout. Quieter than `fielderGlovePop` since these are routine, not putouts. */
+export function ballToss(when = 0): void {
+  const { ctx, master } = ensureAudio();
+  const t0 = ctx.currentTime + when + SCHEDULE_LEAD_SEC;
+
+  // Whoosh: a short bandpassed noise sweep that hints at the ball slicing
+  // through the air.
+  const whoosh = ctx.createBufferSource();
+  whoosh.buffer = makeNoise(ctx, 0.12);
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.Q.value = 1.4;
+  bp.frequency.setValueAtTime(2400, t0);
+  bp.frequency.exponentialRampToValueAtTime(1200, t0 + 0.1);
+  const wg = ctx.createGain();
+  envADR(wg, t0, 0.35, 0.005, 0.02, 0.08);
+  whoosh.connect(bp).connect(wg).connect(master);
+  whoosh.start(t0);
+  whoosh.stop(t0 + 0.13);
+
+  // Soft pat at the catch — slightly later than the whoosh peak so it reads
+  // as "ball arriving in glove".
+  const patT = t0 + 0.09;
+  const pat = ctx.createBufferSource();
+  pat.buffer = makeNoise(ctx, 0.05);
+  const hp = ctx.createBiquadFilter();
+  hp.type = 'highpass';
+  hp.frequency.value = 2000;
+  const pg = ctx.createGain();
+  envADR(pg, patT, 0.5, 0.002, 0.008, 0.04);
+  pat.connect(hp).connect(pg).connect(master);
+  pat.start(patT);
+  pat.stop(patT + 0.06);
+}
+
 /** Strike 3 call: chiptune punch-out fanfare — three ascending square-wave notes. Pitch result is third strike. */
 export function strike3Call(when = 0): void {
   const { ctx, master } = ensureAudio();

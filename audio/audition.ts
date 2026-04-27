@@ -13,6 +13,7 @@ import {
   slide,
   strike3Call,
   batSnap,
+  ballToss,
   ensureAudio,
   setMuted,
   isMuted,
@@ -95,6 +96,13 @@ const CUES: ReadonlyArray<Cue> = [
     occurrence: 'inningEnd / big play — sparingly',
     play: (w) => organStinger(w),
     slotMs: 1100,
+  },
+  {
+    id: 'ball-toss',
+    label: 'Ball toss',
+    occurrence: 'around-the-horn after K (empty bases) and inning-end ball flips',
+    play: (w) => ballToss(w),
+    slotMs: 700,
   },
 ];
 
