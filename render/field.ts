@@ -6,15 +6,37 @@ import {
   PITCHERS_MOUND,
 } from './field-geometry.js';
 import { worldToScreen, type FieldTransform } from './transform.js';
+import { buildWallPath, PLACEHOLDER_DIMENSIONS, type WallPath } from './wall.js';
+import {
+  drawWarningTrack,
+  drawFoulPoles,
+  drawBatterBoxes,
+  drawOnDeckCircles,
+  drawDugouts,
+  drawBackstop,
+  drawOutfieldWall,
+} from './stadium-chrome.js';
+import { drawGrassPattern } from './grass-patterns.js';
+import {
+  drawOutfieldStands,
+  drawHomeBowlStands,
+} from './crowd.js';
+import {
+  drawStadiumCosmetic,
+  flagAmplitudeFor,
+} from './stadium-cosmetics.js';
+import type { Stadium } from '../world/types.js';
 
-// Phase 2 placeholder ballpark. Drawn programmatically. Phase 4 swaps in
-// per-stadium grass patterns, dimensions, and quirks via the registry.
+// drawField is the static park art. Per CLAUDE.md the renderer is a pure
+// function of (event log, tick); this layer paints everything that doesn't
+// depend on player positions or the ball. The layering is deliberate —
+// see the order in `drawField` below — so stadium chrome (warning track,
+// foul poles, dugouts) overlays the grass pattern but sits beneath sprites.
 
 const SKY = '#0e1a26';
 const DEFAULT_GRASS_OUTFIELD = '#3b6e3a';
 const DIRT = '#9a6a3d';
 const DIRT_DARK = '#7c4f2a';
-const WALL_LINE = '#1a1a1a';
 const FOUL_LINE = '#f3eedb';
 const BASE_FILL = '#f8f7e8';
 
@@ -25,9 +47,23 @@ export interface FieldDrawOptions {
   // The background color outside the wall — Phase 6 atmosphere will tint this
   // per-stadium.
   readonly skyColor?: string;
+  // Full stadium record. When provided, the renderer uses its dimensions
+  // (per-segment wall arc), atmosphere (grass pattern, seat palette,
+  // crowd density curve), and quirk (visual flourish) to flesh out the
+  // park. When omitted, drawField falls back to the placeholder ballpark.
+  readonly stadium?: Stadium;
+  // Optional sim-time (in sim ticks) — drives subtle crowd flicker, foul-
+  // pole flag ripple, and the clock-tower hand. Optional so unit tests can
+  // call drawField with no animation context.
+  readonly simTime?: number;
+  // Current inning (1..9). Drives crowd density per the curve. Defaults to
+  // 1 if absent.
+  readonly inning?: number;
+  // Home team's primary color — tints the dugout trim. Optional.
+  readonly homeTeamPrimary?: string;
 }
 
-// Lighten/darken an #rrggbb hex by a delta (-1..1). Used for mow stripes.
+// Lighten/darken an #rrggbb hex by a delta (-1..1).
 const shiftHex = (hex: string, delta: number): string => {
   const clean = hex.replace('#', '');
   const r = parseInt(clean.slice(0, 2), 16);
@@ -38,33 +74,18 @@ const shiftHex = (hex: string, delta: number): string => {
   return `#${toHex(adj(r))}${toHex(adj(g))}${toHex(adj(b))}`;
 };
 
-// Approximate outfield arc. From foul-line corners at ±45° and a target depth.
-const OUTFIELD_DEPTHS = {
-  leftFoul: 335,
-  leftCenter: 380,
-  center: 410,
-  rightCenter: 380,
-  rightFoul: 335,
-};
-
-const polarToField = (angleDeg: number, distFt: number) => {
-  // angle 0 = straight to CF (+Y), -45 = LF foul, +45 = RF foul.
-  const rad = (angleDeg * Math.PI) / 180;
-  return { x: Math.sin(rad) * distFt, y: Math.cos(rad) * distFt };
-};
-
-// Build the fair-territory polygon path on the current ctx.
-const fairTerritoryPath = (ctx: CanvasRenderingContext2D, t: FieldTransform): void => {
+// Build a Canvas2D path tracing the fair-territory polygon for clipping.
+const fairTerritoryPath = (
+  ctx: CanvasRenderingContext2D,
+  t: FieldTransform,
+  wall: WallPath,
+): void => {
   const home = worldToScreen(HOME_PLATE, t);
-  const lf = worldToScreen(polarToField(-45, OUTFIELD_DEPTHS.leftFoul), t);
-  const lc = worldToScreen(polarToField(-22, OUTFIELD_DEPTHS.leftCenter), t);
-  const cf = worldToScreen(polarToField(0, OUTFIELD_DEPTHS.center), t);
-  const rc = worldToScreen(polarToField(22, OUTFIELD_DEPTHS.rightCenter), t);
-  const rf = worldToScreen(polarToField(45, OUTFIELD_DEPTHS.rightFoul), t);
   ctx.moveTo(home.x, home.y);
-  ctx.lineTo(lf.x, lf.y);
-  ctx.quadraticCurveTo(lc.x, lc.y - 12, cf.x, cf.y);
-  ctx.quadraticCurveTo(rc.x, rc.y - 12, rf.x, rf.y);
+  for (const sample of wall.samples) {
+    const p = worldToScreen(sample.point, t);
+    ctx.lineTo(p.x, p.y);
+  }
   ctx.lineTo(home.x, home.y);
   ctx.closePath();
 };
@@ -74,29 +95,79 @@ export const drawField = (
   t: FieldTransform,
   options: FieldDrawOptions = {},
 ): void => {
-  // Sky / outside-the-park background (covers the foul-territory wedges too).
+  const stadium = options.stadium;
+  const dims = stadium?.dimensions ?? PLACEHOLDER_DIMENSIONS;
+  const atmosphere = stadium?.atmosphere;
+  const quirk = stadium?.quirk;
+  const simTime = options.simTime ?? 0;
+  const inning = options.inning ?? 1;
+  const wall = buildWallPath(dims);
+
+  // ---- Layer 1: sky / outside-the-park background --------------------------
   ctx.fillStyle = options.skyColor ?? SKY;
   ctx.fillRect(0, 0, t.canvasWidth, t.canvasHeight);
 
-  const grassBase = options.grassShade ?? DEFAULT_GRASS_OUTFIELD;
-  const grassDark = shiftHex(grassBase, -0.04);
-  const grassLight = shiftHex(grassBase, +0.04);
+  // ---- Layer 2: distant silhouette / beyond-wall quirk decorations --------
+  // (mountains, ponds, clock tower — drawn in sky band before stands so
+  // stands occlude any spillover.)
+  if (atmosphere) {
+    drawStadiumCosmetic(quirk, {
+      ctx,
+      transform: t,
+      wall,
+      simTime,
+      phase: 'beyond-wall',
+    });
+  }
+
+  // ---- Layer 3: stands & roof bowl ----------------------------------------
+  if (atmosphere) {
+    drawOutfieldStands({
+      ctx,
+      transform: t,
+      atmosphere,
+      wall,
+      inning,
+      simTime,
+    });
+  }
+
+  const grassBase = options.grassShade ?? atmosphere?.grassShade ?? DEFAULT_GRASS_OUTFIELD;
   const grassInfield = shiftHex(grassBase, +0.08);
 
+  // ---- Layer 4: outfield wall ---------------------------------------------
+  drawOutfieldWall(ctx, t, wall);
+
+  // ---- Layer 5: outfield grass + selected pattern --------------------------
   // Everything from here in is clipped to fair territory so the dirt and
   // outfield grass can never bleed across the foul lines.
   ctx.save();
   ctx.beginPath();
-  fairTerritoryPath(ctx, t);
+  fairTerritoryPath(ctx, t, wall);
   ctx.clip();
 
   // Outfield grass — fills the whole fair territory.
   ctx.fillStyle = grassBase;
   ctx.fillRect(0, 0, t.canvasWidth, t.canvasHeight);
 
-  // Mow stripes — alternating dark/light wedges radiating from home plate.
-  // Carries enormous aesthetic weight per the polish brief.
-  drawMowStripes(ctx, t, grassDark, grassLight);
+  // Mow stripes / pattern.
+  drawGrassPattern(atmosphere?.grassPattern ?? 'plain', {
+    ctx,
+    transform: t,
+    grassShade: grassBase,
+    wall,
+  });
+
+  // Hill-CF / wind papers — in-field cosmetics that still sit under the dirt.
+  if (atmosphere) {
+    drawStadiumCosmetic(quirk, {
+      ctx,
+      transform: t,
+      wall,
+      simTime,
+      phase: 'in-field',
+    });
+  }
 
   // Infield dirt — a smooth circular arc centered behind the mound.
   drawInfieldDirt(ctx, t);
@@ -117,37 +188,35 @@ export const drawField = (
 
   ctx.restore();
 
-  const lf = worldToScreen(polarToField(-45, OUTFIELD_DEPTHS.leftFoul), t);
-  const lc = worldToScreen(polarToField(-22, OUTFIELD_DEPTHS.leftCenter), t);
-  const cf = worldToScreen(polarToField(0, OUTFIELD_DEPTHS.center), t);
-  const rc = worldToScreen(polarToField(22, OUTFIELD_DEPTHS.rightCenter), t);
-  const rf = worldToScreen(polarToField(45, OUTFIELD_DEPTHS.rightFoul), t);
+  // ---- Layer 6: warning track (drawn unclipped, sits inside the wall) -----
+  drawWarningTrack(ctx, t, wall);
 
-  // Stadium frame band — concrete-gray stroke wider than the wall, drawn
-  // first so the wall outline overlays cleanly on top. Suggests the back
-  // of the stands behind the wall.
-  ctx.strokeStyle = '#5a626c';
-  ctx.lineWidth = 12;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(lf.x, lf.y);
-  ctx.quadraticCurveTo(lc.x, lc.y - 12, cf.x, cf.y);
-  ctx.quadraticCurveTo(rc.x, rc.y - 12, rf.x, rf.y);
-  ctx.stroke();
+  // Re-clip for the on-wall decorations that need to read as painted on
+  // the wall surface (numbers, ivy). Without a clip the ivy would bleed
+  // into the foul band; with this clip it tucks against the inside of
+  // the wall outline.
+  if (atmosphere) {
+    drawStadiumCosmetic(quirk, {
+      ctx,
+      transform: t,
+      wall,
+      simTime,
+      phase: 'on-wall',
+    });
+  }
 
-  // Wall outline on top, thinner.
-  ctx.strokeStyle = WALL_LINE;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(lf.x, lf.y);
-  ctx.quadraticCurveTo(lc.x, lc.y - 12, cf.x, cf.y);
-  ctx.quadraticCurveTo(rc.x, rc.y - 12, rf.x, rf.y);
-  ctx.stroke();
+  // ---- Layer 7: foul poles --------------------------------------------------
+  drawFoulPoles(ctx, t, wall, {
+    flagAmplitude: flagAmplitudeFor(quirk),
+    simTime,
+  });
 
-  // Foul lines (drawn after the clip so they sit cleanly on the boundary).
+  // ---- Layer 8: foul lines --------------------------------------------------
   ctx.strokeStyle = FOUL_LINE;
   ctx.lineWidth = 2;
   const home = worldToScreen(HOME_PLATE, t);
+  const lf = worldToScreen(wall.leftFoul, t);
+  const rf = worldToScreen(wall.rightFoul, t);
   ctx.beginPath();
   ctx.moveTo(home.x, home.y);
   ctx.lineTo(lf.x, lf.y);
@@ -155,7 +224,29 @@ export const drawField = (
   ctx.lineTo(rf.x, rf.y);
   ctx.stroke();
 
-  // Bases.
+  // ---- Layer 9: home-plate stands (behind dugouts) ------------------------
+  if (atmosphere) {
+    drawHomeBowlStands({
+      ctx,
+      transform: t,
+      atmosphere,
+      wall,
+      inning,
+      simTime,
+    });
+  }
+
+  // ---- Layer 10: backstop, dugouts, batter's boxes, on-deck circles -------
+  drawBackstop(ctx, t);
+  drawDugouts(
+    ctx,
+    t,
+    options.homeTeamPrimary ? { trimColor: options.homeTeamPrimary } : {},
+  );
+  drawBatterBoxes(ctx, t);
+  drawOnDeckCircles(ctx, t);
+
+  // ---- Layer 11: bases ------------------------------------------------------
   drawBase(ctx, t, FIRST_BASE);
   drawBase(ctx, t, SECOND_BASE);
   drawBase(ctx, t, THIRD_BASE);
@@ -207,35 +298,6 @@ const drawInfieldGrass = (
   ctx.lineTo(d.x, d.y);
   ctx.closePath();
   ctx.fill();
-};
-
-// Radial mow stripes from home plate. The fair territory is a 90° wedge
-// (roughly 225°→315° in canvas-clockwise radians). We paint alternating
-// thin wedges in a dark/light pair so the outfield reads as mowed.
-const drawMowStripes = (
-  ctx: CanvasRenderingContext2D,
-  t: FieldTransform,
-  darkColor: string,
-  lightColor: string,
-): void => {
-  const home = worldToScreen(HOME_PLATE, t);
-  const N_STRIPES = 14;
-  // -135° → -45° in canvas radians spans the fair-territory wedge.
-  const startRad = (-135 * Math.PI) / 180;
-  const endRad = (-45 * Math.PI) / 180;
-  const stripeSpan = (endRad - startRad) / N_STRIPES;
-  const outerRadius = Math.hypot(t.canvasWidth, t.canvasHeight); // safe-large
-
-  for (let i = 0; i < N_STRIPES; i++) {
-    const a1 = startRad + i * stripeSpan;
-    const a2 = a1 + stripeSpan;
-    ctx.fillStyle = i % 2 === 0 ? darkColor : lightColor;
-    ctx.beginPath();
-    ctx.moveTo(home.x, home.y);
-    ctx.arc(home.x, home.y, outerRadius, a1, a2);
-    ctx.closePath();
-    ctx.fill();
-  }
 };
 
 const drawBase = (

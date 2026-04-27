@@ -141,11 +141,21 @@ export const createRenderLoop = (
 
   const draw = () => {
     const transform = computeTransform(canvas.width, canvas.height);
+    // Build the scene first so the static park art can react to game state
+    // (current inning drives crowd density, simTime drives subtle ambient
+    // animation). Drawing order is unchanged: field is painted, then sprites,
+    // then HUD on top.
+    const scene = buildScene(game.events, simTime, game.sceneCtx);
     drawField(ctx, transform, {
       grassShade: game.sceneCtx.grassShade,
       skyColor: game.sceneCtx.skyColor,
+      simTime: scene.simTime,
+      inning: scene.inning,
+      ...(game.sceneCtx.stadium ? { stadium: game.sceneCtx.stadium } : {}),
+      ...(game.sceneCtx.homeTeamPrimary
+        ? { homeTeamPrimary: game.sceneCtx.homeTeamPrimary }
+        : {}),
     });
-    const scene = buildScene(game.events, simTime, game.sceneCtx);
     lastScene = scene;
     lastTransform = transform;
     drawScene(ctx, transform, scene, {

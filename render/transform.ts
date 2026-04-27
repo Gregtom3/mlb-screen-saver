@@ -12,8 +12,12 @@ export interface FieldTransform {
   readonly pixelsPerFoot: number;
 }
 
-const TARGET_OUTFIELD_FT = 420; // a touch past the deepest fence
-const TARGET_FOUL_FT = 240; // half of the lateral spread we want visible
+// Target the deepest part of the field plus headroom for warning track,
+// outfield bleachers, and the sky band beyond. The bowl now eats real
+// estate above the wall, so we plan for it in the transform rather than
+// letting drawField paint into clipped pixels.
+const TARGET_OUTFIELD_FT = 470; // deepest CF (~425) + ~45ft of stands/sky
+const TARGET_FOUL_FT = 270; // lateral room for foul-pole flags and bleachers
 // Pixels reserved between home plate and the BOTTOM of the bottom HUD
 // panels — i.e. the catcher sprite + a small gap. The HUD itself reserves
 // its own height via bottomHudReserved(canvasWidth).
