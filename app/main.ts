@@ -198,6 +198,7 @@ const buildSceneCtxFor = (
   league: ReturnType<typeof generateInitialLeague>,
   input: GameInput,
   homeTeam: Team,
+  awayTeam: Team,
   stadium: Stadium,
   extras: SceneCtxExtras = {},
 ): SceneContext => {
@@ -225,6 +226,7 @@ const buildSceneCtxFor = (
     skyColor,
     stadium,
     homeTeamPrimary: homeTeam.colors.primary,
+    awayTeamPrimary: awayTeam.colors.primary,
     ...(extras.seasonAggregates ? { seasonAggregates: extras.seasonAggregates } : {}),
     ...(extras.careerBvp ? { careerBvp: extras.careerBvp } : {}),
   };
@@ -380,11 +382,12 @@ const main = () => {
     readonly entry: { gameId: string; homeTeamId: TeamId; awayTeamId: TeamId };
     readonly input: GameInput;
     readonly home: Team;
+    readonly away: Team;
     readonly stadium: Stadium;
     readonly events: readonly SimEvent[];
   }
   const liveGameSeeds: LiveGameSeed[] = liveDayEntries.map((entry) => {
-    const { input, home, stadium } = buildGameInput(league, entry, SEED);
+    const { input, home, away, stadium } = buildGameInput(league, entry, SEED);
     const events = runGame(input);
     gameMetadata.set(entry.gameId, {
       gameId: entry.gameId,
@@ -402,6 +405,7 @@ const main = () => {
       },
       input,
       home,
+      away,
       stadium,
       events,
     };
@@ -441,7 +445,7 @@ const main = () => {
   // pulls season AVG/HR/RBI from `aggregatesWithLive` and "vs PITCHER"
   // matchup totals from a combination of that map plus history.careerBvp.
   const liveGames: LiveGame[] = liveGameSeeds.map((seed) => {
-    const sceneCtx = buildSceneCtxFor(league, seed.input, seed.home, seed.stadium, {
+    const sceneCtx = buildSceneCtxFor(league, seed.input, seed.home, seed.away, seed.stadium, {
       seasonAggregates: aggregatesWithLive,
       careerBvp: history.careerBvp,
     });
@@ -502,6 +506,7 @@ const main = () => {
     getStandings: () => standings,
     getChannelInfo: () => ({ currentIdx: selectedIdx, total: liveGames.length }),
     onEvents: (events) => sfx.dispatch(events),
+    onAnimCues: (cues) => sfx.dispatchAnim(cues),
     onTick: (dt, events) => {
       const frame = ambience.reducer.step(events, dt);
       crowdState = frame.state;

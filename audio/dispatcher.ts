@@ -17,6 +17,7 @@ import {
   foulTick,
   organStinger,
   strike3Call,
+  ballToss,
 } from './sfx.js';
 import { setBedFromState, startBed } from './bed.js';
 import {
@@ -33,6 +34,20 @@ import { startWalkup, stopWalkup } from './walkup.js';
 
 const HARD_HIT_MPH = 95;
 
+// Animation-driven audio cues fired by the renderer at deterministic ticks
+// derived from the event log (around-the-horn throw catches, inning-end
+// ball tosses). These aren't real SimEvents — the sim doesn't model them —
+// but they need the same fire-once-when-crossed semantics. Loop emits them
+// alongside the SimEvent stream; dispatcher maps each kind to a sound.
+export type AnimAudioCue =
+  // Ball arriving in a fielder's glove — bright pop.
+  | { readonly t: number; readonly kind: 'toss-glove' }
+  // Ball arriving back in the pitcher's mitt or a soft warmup pat — softer.
+  | { readonly t: number; readonly kind: 'toss-mitt' }
+  // A throw releasing — light whoosh; layered under the catch so the eye/
+  // ear locks onto the catch frame.
+  | { readonly t: number; readonly kind: 'toss-throw' };
+
 export interface AmbienceTick {
   readonly state: CrowdState;
   readonly pulses: readonly ReactionPulse[];
@@ -41,6 +56,8 @@ export interface AmbienceTick {
 export interface SfxDispatcher {
   /** Discrete-event SFX (existing bat-crack, glove-pop, etc.). */
   dispatch(events: readonly SimEvent[]): void;
+  /** Animation-driven cues (around-the-horn, inning-end tosses). */
+  dispatchAnim(cues: readonly AnimAudioCue[]): void;
   /** Continuous crowd state + reactions. Optional — callers without
    *  /ambience wired up still get the legacy SFX behavior. */
   applyAmbience?(tick: AmbienceTick): void;
@@ -137,6 +154,22 @@ export const createSfxDispatcher = (): SfxDispatcher => {
             break;
           }
           // gameStart / sub / inningEnd: intentionally silent.
+        }
+      }
+    },
+    dispatchAnim(cues) {
+      if (!enabled) return;
+      for (const c of cues) {
+        switch (c.kind) {
+          case 'toss-throw':
+            ballToss();
+            break;
+          case 'toss-glove':
+            fielderGlovePop();
+            break;
+          case 'toss-mitt':
+            catcherMittPop();
+            break;
         }
       }
     },

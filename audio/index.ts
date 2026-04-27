@@ -14,6 +14,7 @@ export {
   slide,
   strike3Call,
   batSnap,
+  ballToss,
 } from './sfx.js';
 export {
   cheer,
@@ -29,6 +30,7 @@ export { startBed, stopBed, setBedFromState, isBedRunning } from './bed.js';
 export { startWalkup, stopWalkup } from './walkup.js';
 export {
   createSfxDispatcher,
-  type SfxDispatcher,
+  type AnimAudioCue,
   type AmbienceTick,
+  type SfxDispatcher,
 } from './dispatcher.js';

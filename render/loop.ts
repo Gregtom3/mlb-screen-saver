@@ -1,10 +1,12 @@
 import type { SimEvent } from '../sim/types.js';
+import type { AnimAudioCue } from '../audio/dispatcher.js';
 import { drawField } from './field.js';
 import { drawHud } from './hud.js';
 import { buildScene, type SceneContext } from './scene.js';
 import { drawScene, findPlayerAtScreen } from './sprites.js';
 import { drawDebugOverlay, isDebugEnabled } from './debug.js';
 import { computeTransform } from './transform.js';
+import { computeAnimAudioCues } from './anim-cues.js';
 import type { PlayerId, TeamId } from '../world/types.js';
 import type { CrowdState } from '../ambience/state.js';
 
@@ -68,6 +70,13 @@ export interface RenderLoopOptions {
    */
   readonly onEvents?: (events: readonly SimEvent[]) => void;
   /**
+   * Called each frame with any animation-driven audio cues (around-the-
+   * horn throws, inning-end ball tosses) that crossed the cursor since
+   * the last frame. Cues are derived from the event log up front, so the
+   * loop just walks them with a parallel cursor and dispatches in order.
+   */
+  readonly onAnimCues?: (cues: readonly AnimAudioCue[]) => void;
+  /**
    * Called every frame, even when there are no new events. Receives the
    * elapsed wall-clock seconds and the (possibly empty) batch of events
    * that just crossed the cursor. Used by /ambience to advance time-based
@@ -106,6 +115,10 @@ export const createRenderLoop = (
   // before this index have already been emitted (or skipped because they sat
   // before the cursor when we joined the game).
   let eventIdx = 0;
+  // Parallel cursor through the precomputed animation-cue list (derived
+  // from the event log). Recomputed whenever the active game changes.
+  let animCues: readonly AnimAudioCue[] = computeAnimAudioCues(initialGame.events);
+  let animCueIdx = 0;
   let hoveredPlayerId: PlayerId | null = null;
   // Last drawn scene + transform, retained so the app can hit-test the
   // canvas in mouse handlers without re-running the scene reducer.
@@ -130,6 +143,16 @@ export const createRenderLoop = (
     }
     return lo;
   };
+  const findAnimIdxAfter = (cues: readonly AnimAudioCue[], t: number): number => {
+    let lo = 0;
+    let hi = cues.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (cues[mid]!.t > t) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo;
+  };
 
   // Returns the events that just crossed the cursor and advances the index
   // even when no callback is registered (so a later subscription doesn't
@@ -139,6 +162,16 @@ export const createRenderLoop = (
     while (eventIdx < game.events.length && game.events[eventIdx]!.t <= simTime) {
       batch.push(game.events[eventIdx]!);
       eventIdx++;
+    }
+    return batch;
+  };
+  // Animation-cue parallel cursor — same fire-once-when-crossed semantics
+  // as SimEvents, but on a precomputed list derived from the event log.
+  const collectDueAnimCues = (): AnimAudioCue[] => {
+    const batch: AnimAudioCue[] = [];
+    while (animCueIdx < animCues.length && animCues[animCueIdx]!.t <= simTime) {
+      batch.push(animCues[animCueIdx]!);
+      animCueIdx++;
     }
     return batch;
   };
@@ -171,6 +204,9 @@ export const createRenderLoop = (
       ...(game.sceneCtx.stadium ? { stadium: game.sceneCtx.stadium } : {}),
       ...(game.sceneCtx.homeTeamPrimary
         ? { homeTeamPrimary: game.sceneCtx.homeTeamPrimary }
+        : {}),
+      ...(game.sceneCtx.awayTeamPrimary
+        ? { awayTeamPrimary: game.sceneCtx.awayTeamPrimary }
         : {}),
       ...(crowdState ? { crowdState } : {}),
       ...(wave?.centerAngleDeg !== undefined
@@ -213,6 +249,8 @@ export const createRenderLoop = (
     const dueEvents = collectDueEvents();
     if (dueEvents.length > 0 && options.onEvents) options.onEvents(dueEvents);
     if (options.onTick) options.onTick(dt, dueEvents);
+    const dueAnimCues = collectDueAnimCues();
+    if (dueAnimCues.length > 0 && options.onAnimCues) options.onAnimCues(dueAnimCues);
     draw();
     if (simTime >= finalT(game)) {
       // Don't stop the loop — user might switch to a still-playing game.
@@ -239,6 +277,7 @@ export const createRenderLoop = (
     jumpTo(t: number) {
       simTime = Math.max(0, Math.min(finalT(game), t));
       eventIdx = findIdxAfter(game, simTime);
+      animCueIdx = findAnimIdxAfter(animCues, simTime);
       draw();
     },
     currentSimTime() { return simTime; },
@@ -248,6 +287,8 @@ export const createRenderLoop = (
       // Re-anchor the cursor so we don't fire SFX for events that happened
       // before we tuned in to this channel.
       eventIdx = findIdxAfter(game, simTime);
+      animCues = computeAnimAudioCues(newGame.events);
+      animCueIdx = findAnimIdxAfter(animCues, simTime);
       // Channel changes invalidate the prior scene's player ids.
       hoveredPlayerId = null;
       draw();

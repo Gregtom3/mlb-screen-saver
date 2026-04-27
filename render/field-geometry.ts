@@ -35,35 +35,94 @@ export const BATTER_BOX_RIGHT: FieldPoint = { x: 3.5, y: 0 };
 export const BATTER_BOX_WIDTH_FT = 4;
 export const BATTER_BOX_DEPTH_FT = 6;
 
-// On-deck circles — a stride or two outside the batter's-box pair, between
-// the boxes and the dugouts. Standard MLB diameter is 5ft; the renderer
-// uses the world-coord radius below.
-export const ON_DECK_LEFT: FieldPoint = { x: -22, y: -4 };
-export const ON_DECK_RIGHT: FieldPoint = { x: 22, y: -4 };
-export const ON_DECK_RADIUS_FT = 2.5;
-
-// Dugouts — recessed rectangles in foul territory, flanking the foul lines
-// roughly a third of the way from home toward 1B / 3B. Sit between the
-// chalk lines and the lower-bowl front edge so they read as part of the
-// stadium silhouette instead of stranded boxes behind home plate (the
-// previous y=-22 placement put them between home and the floating "smile"
-// arc, which looked broken).
+// Dugouts — recessed rectangles in foul territory, **rotated to lie parallel
+// to the foul lines** rather than the baseline. The diagonal orientation
+// matches real ballparks (the dugouts hug the foul-line edge of the bowl)
+// and gives the on-deck batter a natural sightline to the plate.
 //
-// Shape sized to read at screensaver scale: ~42ft wide × ~9ft deep, parallel
-// to the baseline. Sim-side runner walk-offs (in /render/scene.ts) read
-// these constants so the path-out still ends at the dugout.
-export const DUGOUT_LEFT_RECT = {
-  cx: -75,
-  cy: 26,
-  widthFt: 42,
-  depthFt: 9,
-} as const;
+// Convention: the 1B-side (right) dugout belongs to the **home** team; the
+// 3B-side (left) dugout belongs to the **away** team. Walk-offs in scene.ts
+// pick which dugout to head toward based on team membership, not x-sign.
+//
+// Shape: ~46 ft long along the foul line × ~9 ft deep into foul territory.
+// Center is offset so the dugout sits ~13 ft into foul (clear of the foul-
+// line dirt strip) and starts ~30 ft from home plate along the foul line.
 export const DUGOUT_RIGHT_RECT = {
-  cx: 75,
-  cy: 26,
-  widthFt: 42,
+  cx: 70,
+  cy: 30,
+  lengthFt: 46,
   depthFt: 9,
+  // Long axis parallel to the 1B foul line (45° in field coords).
+  angleRad: Math.PI / 4,
 } as const;
+export const DUGOUT_LEFT_RECT = {
+  cx: -70,
+  cy: 30,
+  lengthFt: 46,
+  depthFt: 9,
+  // Long axis parallel to the 3B foul line.
+  angleRad: -Math.PI / 4,
+} as const;
+
+// Structural shape — both DUGOUT_*_RECT consts widen to this so callers
+// (the doorway helper, the chrome renderer) can treat them uniformly even
+// though TS narrows each `as const` literal to its own distinct type.
+export interface DugoutRect {
+  readonly cx: number;
+  readonly cy: number;
+  readonly lengthFt: number;
+  readonly depthFt: number;
+  readonly angleRad: number;
+}
+
+// "Doorway" points — where players appear to disappear into / emerge from
+// the dugout. Picked at the front edge midpoint of each rotated rectangle,
+// closer to home plate so the walk-off path is short and the on-deck circle
+// can sit just in front of it without overlapping.
+const dugoutDoorway = (rect: DugoutRect): FieldPoint => {
+  const cos = Math.cos(rect.angleRad);
+  const sin = Math.sin(rect.angleRad);
+  // Front edge (toward fair territory) midpoint, then nudged toward home
+  // plate along the long axis so the doorway sits at the home-plate end.
+  const halfLen = rect.lengthFt * 0.42;
+  const halfDepth = rect.depthFt * 0.45;
+  // Direction "toward fair territory" is the inward perpendicular —
+  // for the right dugout the perp pointing into fair is (-sin, +cos)
+  // rotated; equivalently the field-side perp.
+  // The right dugout's fair side is up-and-left of the long axis, so
+  // perp into fair = (-sin, cos). For the left dugout (angle = -π/4),
+  // (-sin, cos) = (sin45, cos45) — points up-right, into fair. Good.
+  const fairPerpX = -sin;
+  const fairPerpY = cos;
+  // Home-plate end of the long axis — toward home plate so the doorway sits
+  // closer to the action, near the on-deck circle.
+  const towardHomeX = rect.cx > 0 ? -cos : cos;
+  const towardHomeY = rect.cx > 0 ? -sin : sin;
+  return {
+    x: rect.cx + halfLen * towardHomeX + halfDepth * fairPerpX,
+    y: rect.cy + halfLen * towardHomeY + halfDepth * fairPerpY,
+  };
+};
+
+// Walk-off / walk-on anchor for each side. The home team's dugout is the
+// 1B-side rectangle; the away team's is the 3B-side rectangle.
+export const DUGOUT_DOORWAY_HOME: FieldPoint = dugoutDoorway(DUGOUT_RIGHT_RECT);
+export const DUGOUT_DOORWAY_AWAY: FieldPoint = dugoutDoorway(DUGOUT_LEFT_RECT);
+
+// On-deck circles — sit just in front of (toward home plate from) each
+// dugout doorway, on the foul side of the line so the on-deck batter's
+// silhouette doesn't crowd the diamond. Standard MLB diameter is 5ft; the
+// renderer uses the world-coord radius below.
+const onDeckPoint = (doorway: FieldPoint, sign: -1 | 1): FieldPoint => ({
+  // Pulled ~6 ft toward home along the foul line and slightly back into
+  // foul territory so the swinging on-deck batter doesn't visually
+  // overlap with the dugout doorway.
+  x: doorway.x - sign * 5,
+  y: doorway.y - 7,
+});
+export const ON_DECK_RIGHT: FieldPoint = onDeckPoint(DUGOUT_DOORWAY_HOME, +1);
+export const ON_DECK_LEFT: FieldPoint = onDeckPoint(DUGOUT_DOORWAY_AWAY, -1);
+export const ON_DECK_RADIUS_FT = 2.5;
 
 // Backstop arc — the rounded fence behind the catcher. Sits ~60ft behind
 // home plate at its deepest point, sweeping foul-line to foul-line.

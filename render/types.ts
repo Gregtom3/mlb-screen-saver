@@ -92,7 +92,19 @@ export interface FieldPoint {
   readonly y: number;
 }
 
-export type SpriteRole = 'pitcher' | 'batter' | 'catcher' | 'fielder' | 'runner';
+export type SpriteRole =
+  | 'pitcher'
+  | 'batter'
+  | 'catcher'
+  | 'fielder'
+  | 'runner'
+  // On-deck batter: rendered at the on-deck circle, swinging a bat in idle
+  // warmup. Drawn just like a `batter` (with the bat sprite) but without
+  // the at-bat-driven swingFrac.
+  | 'on-deck'
+  // Outgoing batter: a player walking back to the dugout after being out.
+  // Drawn like a normal player (no bat).
+  | 'outgoing';
 
 export interface ScenePlayer {
   readonly id: PlayerId;
@@ -188,6 +200,15 @@ export interface SceneState {
   readonly catcher: ScenePlayer | null;
   readonly fielders: readonly ScenePlayer[];
   readonly runners: readonly ScenePlayer[];
+  // The next batter — visible at the on-deck circle (in front of their
+  // team's dugout) while a live at-bat is in progress, taking idle warmup
+  // swings. Null when there's no current batter (pre-game, between innings,
+  // post-game).
+  readonly onDeckBatter: ScenePlayer | null;
+  // The previous batter, slow-walking back to their dugout after being put
+  // out (strikeout, lineout, popout — outcomes that don't fire a baserunner
+  // event). Null otherwise.
+  readonly outgoingBatter: ScenePlayer | null;
   readonly ball: SceneBall;
   readonly lastPlay: string | null;
   readonly homeTeamId: TeamId;

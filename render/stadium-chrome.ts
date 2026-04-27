@@ -177,40 +177,113 @@ export const drawOnDeckCircles = (
   ctx.restore();
 };
 
-// Dugouts — recessed dark rectangles flush with the backstop, with a hint
-// of bench inside and a roof lip for depth. The team color trim gives each
-// park a faint per-team identity even when the rest of the chrome reads as
-// generic.
+// Dugouts — recessed dark rectangles, rotated to lie parallel to the foul
+// lines. Each dugout takes its trim color from the team that occupies it
+// (home → 1B/right dugout, away → 3B/left dugout). When a trim color is
+// missing the renderer falls back to a neutral concrete grey.
 export interface DugoutOptions {
-  readonly trimColor?: string; // typically the home-team primary
+  readonly homeTrimColor?: string; // primary color of the home team (1B side)
+  readonly awayTrimColor?: string; // primary color of the away team (3B side)
 }
+
+const drawOneDugout = (
+  ctx: CanvasRenderingContext2D,
+  t: FieldTransform,
+  rect: import('./field-geometry.js').DugoutRect,
+  trim: string,
+): void => {
+  const cos = Math.cos(rect.angleRad);
+  const sin = Math.sin(rect.angleRad);
+  const halfLen = (rect.lengthFt * t.pixelsPerFoot) / 2;
+  const halfDepth = (rect.depthFt * t.pixelsPerFoot) / 2;
+  const center = worldToScreen({ x: rect.cx, y: rect.cy }, t);
+  // Long-axis unit in screen coords. worldToScreen flips Y, so the screen-
+  // space long axis is (cos, -sin) for an angle measured in field coords.
+  const lx = cos;
+  const ly = -sin;
+  // Perpendicular into "foul territory" (away from fair). For the right
+  // dugout, fair perp in field coords is (-sin, cos); in screen coords
+  // (sin, cos)? Actually since we just want the rectangle's rotated frame
+  // we flip the Y component of the perp the same way: perp_screen =
+  // (-(-sin), -cos) = (sin, -cos). For drawing the rectangle, signs cancel
+  // — both perp directions trace the same outline. We'll use (-ly, lx) for
+  // the perpendicular: (sin, cos).
+  const px = -ly;
+  const py = lx;
+
+  const corner = (longSign: -1 | 1, depthSign: -1 | 1) => ({
+    x: center.x + longSign * halfLen * lx + depthSign * halfDepth * px,
+    y: center.y + longSign * halfLen * ly + depthSign * halfDepth * py,
+  });
+  const c1 = corner(-1, -1);
+  const c2 = corner(+1, -1);
+  const c3 = corner(+1, +1);
+  const c4 = corner(-1, +1);
+
+  // Recessed body — the rotated dark rectangle.
+  ctx.save();
+  ctx.fillStyle = DUGOUT_FILL;
+  ctx.beginPath();
+  ctx.moveTo(c1.x, c1.y);
+  ctx.lineTo(c2.x, c2.y);
+  ctx.lineTo(c3.x, c3.y);
+  ctx.lineTo(c4.x, c4.y);
+  ctx.closePath();
+  ctx.fill();
+
+  // Roof lip — a thin parallelogram offset 2px outward from the back edge
+  // (the "deep into foul" side, c2 → c3) so the roof catches a sliver of
+  // light along the dugout's outer edge.
+  const roofLift = 2;
+  const r1 = { x: c2.x + px * roofLift, y: c2.y + py * roofLift };
+  const r2 = { x: c3.x + px * roofLift, y: c3.y + py * roofLift };
+  ctx.fillStyle = DUGOUT_ROOF;
+  ctx.beginPath();
+  ctx.moveTo(c2.x, c2.y);
+  ctx.lineTo(r1.x, r1.y);
+  ctx.lineTo(r2.x, r2.y);
+  ctx.lineTo(c3.x, c3.y);
+  ctx.closePath();
+  ctx.fill();
+
+  // Bench — a tan stripe inset along the back wall (parallel to the long
+  // axis, two-thirds of the way back from the front edge).
+  const benchInset = halfDepth * 0.4;
+  const benchTrimEnd = halfLen * 0.85;
+  const b1 = {
+    x: center.x - benchTrimEnd * lx + benchInset * px,
+    y: center.y - benchTrimEnd * ly + benchInset * py,
+  };
+  const b2 = {
+    x: center.x + benchTrimEnd * lx + benchInset * px,
+    y: center.y + benchTrimEnd * ly + benchInset * py,
+  };
+  ctx.strokeStyle = DUGOUT_BENCH;
+  ctx.lineWidth = Math.max(1, halfDepth * 0.35);
+  ctx.lineCap = 'butt';
+  ctx.beginPath();
+  ctx.moveTo(b1.x, b1.y);
+  ctx.lineTo(b2.x, b2.y);
+  ctx.stroke();
+
+  // Trim — 1px team-colored line tracing the roof edge (c2 → c3 offset out).
+  ctx.strokeStyle = trim;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(r1.x, r1.y);
+  ctx.lineTo(r2.x, r2.y);
+  ctx.stroke();
+  ctx.restore();
+};
+
 export const drawDugouts = (
   ctx: CanvasRenderingContext2D,
   t: FieldTransform,
   opts: DugoutOptions = {},
 ): void => {
-  const trim = opts.trimColor ?? '#7d848d';
-  for (const rect of [DUGOUT_LEFT_RECT, DUGOUT_RIGHT_RECT]) {
-    const center = worldToScreen({ x: rect.cx, y: rect.cy }, t);
-    const w = rect.widthFt * t.pixelsPerFoot;
-    const h = rect.depthFt * t.pixelsPerFoot;
-    const x = center.x - w / 2;
-    const y = center.y - h / 2;
-    // Recessed body.
-    ctx.fillStyle = DUGOUT_FILL;
-    ctx.fillRect(x, y, w, h);
-    // Roof lip — 2px overhang that catches the eye.
-    ctx.fillStyle = DUGOUT_ROOF;
-    ctx.fillRect(x - 1, y - 2, w + 2, 2);
-    // Bench — a 1-2px tan stripe along the back wall.
-    const benchY = y + Math.round(h * 0.55);
-    const benchH = Math.max(1, Math.round(h * 0.18));
-    ctx.fillStyle = DUGOUT_BENCH;
-    ctx.fillRect(x + 3, benchY, w - 6, benchH);
-    // Trim — 1px team-colored line along the top of the roof.
-    ctx.fillStyle = trim;
-    ctx.fillRect(x - 1, y - 3, w + 2, 1);
-  }
+  const fallback = '#7d848d';
+  drawOneDugout(ctx, t, DUGOUT_RIGHT_RECT, opts.homeTrimColor ?? fallback);
+  drawOneDugout(ctx, t, DUGOUT_LEFT_RECT, opts.awayTrimColor ?? fallback);
 };
 
 // Backstop fence behind home plate. A single thin arc — the ump's screen.
