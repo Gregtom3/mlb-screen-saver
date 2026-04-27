@@ -1,8 +1,8 @@
-import type { Player, Team } from '../world/types.js';
+import type { Coach, Player, Team } from '../world/types.js';
 
 // Procedural 64×64 pixel-art portrait — drawn into a returned <canvas> so
-// the caller can drop it inline. Uses player.id as the seed so the same
-// player always renders identically.
+// the caller can drop it inline. Uses the subject's id as the seed so the
+// same person always renders identically.
 
 // Structural team-color hint. The portrait only needs the three team color
 // hexes; callers in the canvas HUD don't always have a full Team handy
@@ -37,13 +37,16 @@ class Mulberry {
 const SKIN_TONES = ['#f1c08e', '#d99169', '#a86c45', '#7d4a2a', '#5a3320'];
 const HAIR_COLORS = ['#1c1410', '#3a2515', '#6a4225', '#a67238', '#d6b06a', '#7e7676', '#444'];
 
-export const drawPortrait = (
+// Core drawing routine shared by players and coaches. `id` seeds the PRNG;
+// `smile` drives the mouth expression.
+const drawPortraitCore = (
   ctx: CanvasRenderingContext2D,
-  player: Player,
+  id: string,
+  smile: boolean,
   team: PortraitTeamHint,
-  size = 64,
+  size: number,
 ): void => {
-  const rng = new Mulberry(fnv(player.id));
+  const rng = new Mulberry(fnv(id));
   const skin = rng.pick(SKIN_TONES);
   const hair = rng.pick(HAIR_COLORS);
   const cap = team?.colors.primary ?? '#345';
@@ -92,7 +95,7 @@ export const drawPortrait = (
     fill(7, 2, 2, 4, hair);
   }
 
-  // Cap (overlays hair). 70% of players wear one.
+  // Cap (overlays hair). 70% of time.
   if (rng.next() < 0.7) {
     fill(3, 2, 10, 2, cap);
     fill(3, 4, 8, 1, cap);
@@ -103,8 +106,7 @@ export const drawPortrait = (
   // Eyes — two pixels.
   fill(6, 7, 1, 1, eye);
   fill(9, 7, 1, 1, eye);
-  // Mouth — a 2px line; tilted up if clutch is high (just for fun).
-  const smile = player.ratings.clutch > 65;
+  // Mouth — tilted up when smiling.
   if (smile) {
     fill(7, 10, 2, 1, mouth);
     fill(6, 9, 1, 1, mouth);
@@ -117,11 +119,42 @@ export const drawPortrait = (
   ctx.imageSmoothingEnabled = false;
 };
 
+export const drawPortrait = (
+  ctx: CanvasRenderingContext2D,
+  player: Player,
+  team: PortraitTeamHint,
+  size = 64,
+): void => drawPortraitCore(ctx, player.id, player.ratings.clutch > 65, team, size);
+
 export const portraitDataUrl = (player: Player, team: PortraitTeamHint, size = 64): string => {
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
-  drawPortrait(ctx, player, team, size);
+  drawPortrait(canvas.getContext('2d')!, player, team, size);
+  return canvas.toDataURL();
+};
+
+// Coach portraits use the role's most meaningful rating for the smile:
+// a manager who motivates well smiles, an aggressive 3B coach smiles, etc.
+const coachSmile = (coach: Coach): boolean => {
+  switch (coach.role) {
+    case 'head':         return coach.ratings.morale > 65;
+    case 'third-base':   return coach.ratings.aggression > 65;
+    case 'first-base':   return coach.ratings.baserunningCoaching > 65;
+  }
+};
+
+export const drawCoachPortrait = (
+  ctx: CanvasRenderingContext2D,
+  coach: Coach,
+  team: PortraitTeamHint,
+  size = 64,
+): void => drawPortraitCore(ctx, coach.id, coachSmile(coach), team, size);
+
+export const coachPortraitDataUrl = (coach: Coach, team: PortraitTeamHint, size = 64): string => {
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  drawCoachPortrait(canvas.getContext('2d')!, coach, team, size);
   return canvas.toDataURL();
 };
