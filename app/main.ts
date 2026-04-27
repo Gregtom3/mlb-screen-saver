@@ -470,6 +470,45 @@ const main = () => {
     sizeCanvas(canvas);
     handle.redraw();
   });
+
+  // ---- Hover + click on field sprites. The render loop draws every player
+  // with a faint name label; hovering crisps the label up, and clicking
+  // opens that player's stats view in the menu.
+  const screenCoordsForEvent = (ev: MouseEvent): { x: number; y: number } => {
+    const rect = canvas.getBoundingClientRect();
+    // The canvas backing store is sized in device pixels (see sizeCanvas);
+    // CSS coordinates need to be scaled by the same ratio so hit-testing
+    // against worldToScreen() (which produces backing-store px) lines up.
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return {
+      x: (ev.clientX - rect.left) * scaleX,
+      y: (ev.clientY - rect.top) * scaleY,
+    };
+  };
+
+  canvas.addEventListener('mousemove', (ev) => {
+    if (menu.isOpen()) return;
+    const { x, y } = screenCoordsForEvent(ev);
+    const id = handle.playerAtScreen(x, y);
+    handle.setHoveredPlayer(id);
+    canvas.style.cursor = id ? 'pointer' : '';
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    handle.setHoveredPlayer(null);
+    canvas.style.cursor = '';
+  });
+
+  canvas.addEventListener('click', (ev) => {
+    if (menu.isOpen()) return;
+    const { x, y } = screenCoordsForEvent(ev);
+    const id = handle.playerAtScreen(x, y);
+    if (id) {
+      ev.preventDefault();
+      menu.goToPlayer(id);
+    }
+  });
 };
 
 main();
