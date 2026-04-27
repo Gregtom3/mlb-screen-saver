@@ -132,11 +132,30 @@ const pitchTypeFor = (pitcher: Player, rng: PRNG): PitchType => {
   return 'offspeed';
 };
 
-const velocityFor = (pitcher: Player, type: PitchType, rng: PRNG): number => {
+const velocityFor = (pitcher: Player, type: PitchType, fatigue: number, rng: PRNG): number => {
   // velocity rating drives fastball MPH; off-speed bands trail behind.
+  // Fatigue shaves MPH off the fastball most aggressively (≈0.4 mph per
+  // effective rating point lost).
   const base = type === 'fastball' ? 92 : type === 'breaking' ? 82 : type === 'offspeed' ? 78 : 86;
   const v = pitcher.ratings.velocity;
-  return Math.round(base + (v - 50) * 0.08 + (rng.next() - 0.5) * 4);
+  const fatMph = fatigue * (type === 'fastball' ? 0.04 : 0.025);
+  return Math.round(base + (v - 50) * 0.08 - fatMph + (rng.next() - 0.5) * 4);
+};
+
+// Per-pitch fatigue accumulator. After a stamina-dependent threshold, every
+// further pitch shaves a fraction of an effective rating point off the
+// pitcher's control + velocity + stuff. Returns the cumulative loss in
+// rating-point units (0 when the pitcher is still fresh).
+const fatigueLoss = (pitcher: Player, pitchCount: number): number => {
+  // Threshold: a 50-stamina starter starts feeling it at ~30 pitches; an
+  // elite-stamina starter (90) holds out until ~50; a low-stamina arm (20)
+  // fades by ~15.
+  const threshold = 30 + (pitcher.ratings.stamina - 50) * 0.5;
+  const over = Math.max(0, pitchCount - threshold);
+  // Decay rate: lower stamina → faster slide. Capped so the late innings
+  // don't flatline a pitcher to nothing.
+  const decayPerPitch = Math.max(0.15, 0.5 - (pitcher.ratings.stamina - 50) * 0.005);
+  return Math.min(25, over * decayPerPitch);
 };
 
 const simulatePitch = (
@@ -144,14 +163,17 @@ const simulatePitch = (
   batter: Player,
   count: { balls: number; strikes: number },
   pitchType: PitchType,
+  pitchCount: number,
   rng: PRNG,
 ): PitchOutcome => {
   const type = pitchType;
-  const velocity = velocityFor(pitcher, type, rng);
+  const fatigue = fatigueLoss(pitcher, pitchCount);
+  const velocity = velocityFor(pitcher, type, fatigue, rng);
 
-  // In-zone probability — driven by `control`. Tired starters drift off the
-  // edges, so stamina pulls down once it's deep in the count.
-  const zoneProb = 0.42 + (pitcher.ratings.control - 50) * 0.004;
+  // In-zone probability — driven by `control`. Fatigue pulls effective
+  // control down: a tired pitcher misses the strike zone more.
+  const effControl = pitcher.ratings.control - fatigue;
+  const zoneProb = 0.42 + (effControl - 50) * 0.004;
   const inZone = rng.next() < zoneProb;
   const locationZone = inZone ? pickInZoneLocation(pitcher, rng) : 0; // 0 = outside
 
@@ -184,9 +206,11 @@ const simulatePitch = (
   }
 
   // Stuff resists contact: high velocity + high breaking-ball / changeup
-  // rating on its own pitch type lifts swing-and-miss rate.
+  // rating on its own pitch type lifts swing-and-miss rate. Fatigue eats
+  // into the pitcher's effective velocity here too.
+  const effVelocity = pitcher.ratings.velocity - fatigue;
   const stuffPenalty =
-    (pitcher.ratings.velocity - 50) * 0.0008 +
+    (effVelocity - 50) * 0.0008 +
     (type === 'breaking' ? (pitcher.ratings.breakingBall - 50) * 0.001 : 0) +
     (type === 'offspeed' ? (pitcher.ratings.changeup - 50) * 0.001 : 0);
   const contactProb =
@@ -264,15 +288,19 @@ const buildBallPath = (
   outcome: AtBatOutcome,
   batter: Player,
   pitcher: Player,
+  pitchCount: number,
   rng: PRNG,
 ): BallPath => {
   const profile = PROFILES[outcome];
   if (!profile) throw new Error(`buildBallPath called for non-contact outcome: ${outcome}`);
 
-  // Player-rating modulation, layered on top of the profile band.
+  // Player-rating modulation, layered on top of the profile band. Pitcher
+  // suppression uses the fatigue-adjusted stamina, so a gassed starter gives
+  // up more exit velocity than the same arm in the first inning.
+  const fatigue = fatigueLoss(pitcher, pitchCount);
   const powerAdj = (batter.ratings.power - 50) * 0.12;
   const contactAdj = (batter.ratings.contact - 50) * 0.04;
-  const pitcherSuppression = (pitcher.ratings.stamina - 50) * 0.08;
+  const pitcherSuppression = (pitcher.ratings.stamina - fatigue - 50) * 0.08;
   let exitVeloMph =
     profile.evMin + rng.next() * (profile.evMax - profile.evMin) + powerAdj - pitcherSuppression;
   exitVeloMph = clamp(exitVeloMph, 45, 115); // hard cap at 115 — top-end MLB EV.
@@ -368,8 +396,16 @@ const fielderPositionFor = (outcome: AtBatOutcome, ballPath: BallPath): Position
   }
 };
 
-const errorProbForGlove = (glove: number): number =>
-  clamp(0.022 - (glove - 50) * 0.0006, 0.003, 0.06);
+// Per-chance error probability. Two dials:
+//   1) Base spread by glove rating — widened so an iron-glove butcher errs
+//      noticeably more than league-average and an elite glove almost never.
+//   2) Tough-hop multiplier on hot-shot batted balls (>95 mph EV). A great
+//      glove still scoops them; a poor glove eats more bad hops on smashes.
+const errorProbForGlove = (glove: number, exitVeloMph: number): number => {
+  const base = 0.022 - (glove - 50) * 0.0009;
+  const toughHopBonus = exitVeloMph > 95 ? Math.max(0, 95 - glove) * 0.00025 : 0;
+  return clamp(base + toughHopBonus, 0.002, 0.085);
+};
 
 // Multiplier applied to in-play hit-quality from a batter's xBA grid at the
 // pitch's location. Center it around the league mean (~1.0 by construction)
@@ -385,6 +421,7 @@ const xBAMultFor = (batter: Player, locationZone: number): number => {
 const simulateInPlay = (
   batter: Player,
   pitcher: Player,
+  pitchCount: number,
   outs: number,
   bases: BasesState,
   rng: PRNG,
@@ -396,27 +433,30 @@ const simulateInPlay = (
   // by stadium-quirk adjustments (Phase 4 plugin). Quirks shift odds; they
   // never change ratings or fabricate outcomes directly.
   // Platoon penalty: when batter and pitcher share handedness, batter loses
-  // a small amount of effective contact + power. `platoonBias` >50 amplifies
-  // the penalty; <50 dampens it (reverse-split hitter).
+  // effective contact AND power. `platoonBias` >50 amplifies the penalty;
+  // <50 dampens it (reverse-split hitter). Coefficient calibrated so a
+  // typical bias-65 hitter sees a meaningful but not dominant same-hand dip.
   const sameHand =
     (batter.bats === 'L' && pitcher.throws === 'L') ||
     (batter.bats === 'R' && pitcher.throws === 'R');
-  const platoonStrength = sameHand ? (batter.ratings.platoonBias - 50) * 0.0005 : 0;
+  const platoonStrength = sameHand ? (batter.ratings.platoonBias - 50) * 0.0025 : 0;
   // Composure (pitcher) vs clutch (batter) net out in high-leverage states.
   // 50 vs 50 = 0; both elite ≈ 0; one-sided shifts by up to ~3% on each rate.
   const leverageNet = highLeverage
     ? (batter.ratings.clutch - 50 - (pitcher.ratings.composure - 50)) * 0.0006
     : 0;
 
-  const power = batter.ratings.power - 50;
+  const power = batter.ratings.power - 50 - platoonStrength * 80;
   const speed = batter.ratings.speed - 50;
   const contact = batter.ratings.contact - 50 - platoonStrength * 100;
   // `command` keeps pitches off the heart of the plate → fewer barrels →
   // lower HR rate. `groundballTendency` further suppresses HR + bumps
-  // grounders. `velocity` slightly suppresses contact-quality across the board.
+  // grounders. `velocity` slightly suppresses contact-quality across the
+  // board, fading as the pitcher tires.
+  const fatigue = fatigueLoss(pitcher, pitchCount);
   const cmd = pitcher.ratings.command - 50;
   const gb = pitcher.ratings.groundballTendency - 50;
-  const stuff = (pitcher.ratings.velocity - 50) * 0.5;
+  const stuff = (pitcher.ratings.velocity - fatigue - 50) * 0.5;
 
   const adj: QuirkAdjustments = adjustmentsFor(quirk);
   // Batter zone preference at the pitch location. The scalar tilts the
@@ -438,10 +478,14 @@ const simulateInPlay = (
       adj.doubleRateMul *
       (1 + xBABoost * 0.7),
   );
-  const tplRate = Math.max(0.001, (0.005 + speed * 0.0003) * adj.tripleRateMul);
+  // Speed lifts triples (raw foot speed in the gap) and gives a small bump
+  // to overall single rate (legging out grounders + beating throws on bloop
+  // hits). Infield-hit conversion happens after the outcome is picked, below.
+  const tplRate = Math.max(0.001, (0.005 + speed * 0.0006) * adj.tripleRateMul);
   const sglRate = Math.max(
     0.05,
-    (0.2 + contact * 0.0011 - stuff * 0.0003 + leverageNet * 0.5) * (1 + xBABoost * 0.5),
+    (0.2 + contact * 0.0011 + speed * 0.0006 - stuff * 0.0003 + leverageNet * 0.5) *
+      (1 + xBABoost * 0.5),
   );
 
   const r = rng.next();
@@ -481,9 +525,18 @@ const simulateInPlay = (
       else if (r < 0.88) outcome = 'fielders-choice';
       // else stays as groundout — defense couldn't get the force.
     }
+
+    // Infield-hit conversion: a fast batter sometimes legs out a grounder
+    // that would otherwise be an out. Caps near MLB's fastest "legs it out
+    // ~12% of grounders" rate. Force-play states (DP / FC) are excluded —
+    // those already accounted for the lead runner.
+    if (outcome === 'groundout') {
+      const infieldHitProb = clamp((batter.ratings.speed - 50) * 0.0015, 0, 0.06);
+      if (rng.next() < infieldHitProb) outcome = 'single';
+    }
   }
 
-  const ballPath = buildBallPath(outcome, batter, pitcher, rng);
+  const ballPath = buildBallPath(outcome, batter, pitcher, pitchCount, rng);
   return { outcome, ballPath };
 };
 
@@ -717,7 +770,10 @@ const simulateAtBat = (
 
   while (outcome === null) {
     const ptype = pitchTypeFor(pitcher, rng);
-    const po = simulatePitch(pitcher, batter, { balls, strikes }, ptype, rng);
+    // Snapshot the pitch count for this pitch so simulatePitch and any
+    // downstream simulateInPlay see the same fatigue value.
+    const pitchCountForThisPitch = fielding.pitcherPitches;
+    const po = simulatePitch(pitcher, batter, { balls, strikes }, ptype, pitchCountForThisPitch, rng);
     state.t += TIME_PITCH;
     pitchSeq += 1;
     fielding.pitcherPitches += 1;
@@ -764,6 +820,7 @@ const simulateAtBat = (
         inPlayResult = simulateInPlay(
           batter,
           pitcher,
+          pitchCountForThisPitch,
           state.outs,
           state.bases,
           rng,
@@ -795,7 +852,10 @@ const simulateAtBat = (
           : fielding.input.defenseByPosition[fieldPos];
       if (fielderId) {
         const fielder = playerIndex.get(fielderId);
-        if (fielder && rng.next() < errorProbForGlove(fielder.ratings.glove)) {
+        if (
+          fielder &&
+          rng.next() < errorProbForGlove(fielder.ratings.glove, inPlayResult.ballPath.exitVeloMph)
+        ) {
           outcome = 'reached-on-error';
         }
       }
