@@ -1,6 +1,7 @@
 import type { FieldTransform } from './transform.js';
 import type { StadiumAtmosphere } from '../world/types.js';
 import type { BowlPoint, BowlTierSpec, StadiumBowl } from './stadium-bowl.js';
+import type { CrowdState } from '../ambience/state.js';
 
 // Crowd renderer. Now draws a continuous tiered bowl built from the polyline
 // in stadium-bowl.ts — back-wall concrete, lower bowl, concourse gap, upper
@@ -48,6 +49,10 @@ interface CrowdArgs {
   // Optional wave-burst — angle band where fans are jumping right now.
   readonly waveCenterAngleDeg?: number;
   readonly waveStrength?: number; // 0..1
+  // Optional live crowd state. Drives an energy-modulated density bump
+  // (more seats fill in when the building is loud), and an arousal-driven
+  // flicker rate (more camera flashes during a roar). Absent = baseline.
+  readonly crowdState?: CrowdState;
 }
 
 // Build a closed polygon from two parallel offsets of the bowl front edge.
@@ -145,6 +150,13 @@ const drawTierStructure = (
 // Stair-stepped fan rows for a tier. Each row is offset progressively
 // further from the bowl front, with deterministic per-seat fan / empty /
 // flicker decisions. Replaces the old single-line speckle.
+//
+// `flickerThreshold` controls how often a seat brightens to white (camera
+// flash). Lower threshold = more flashes; ramped down with arousal. Default
+// is 0.985 (~1 in 150 per epoch); a peak roar brings it to ~0.96 (~1 in 25).
+//
+// `arousalLift` is a small extra lift applied to the front row only, so the
+// crowd reads as "leaning in" during peak moments. Sine-modulated by simTime.
 const drawTierFans = (
   ctx: CanvasRenderingContext2D,
   front: readonly BowlPoint[],
@@ -153,11 +165,19 @@ const drawTierFans = (
   simTime: number,
   bandSeed: number,
   wave?: { centerDeg: number; strength: number },
+  flickerThreshold: number = 0.985,
+  arousalLift: number = 0,
 ): void => {
   if (tier.seatRows <= 0) return;
   const rowSpacing = tier.depthPx / tier.seatRows;
   const flickerEpoch = Math.floor(simTime / 6);
+  // Faster flicker churn at high arousal — re-roll the camera-flash hash
+  // every 2 simTicks instead of 6 so the flashes feel pulsing.
+  const fastEpoch =
+    flickerThreshold < 0.97 ? Math.floor(simTime / 2) : flickerEpoch;
   const palette = tier.seatPalette;
+  // Slow LFO so the lean-in doesn't feel uniform across the bowl.
+  const leanLfo = Math.sin(simTime * 0.18);
   for (let row = 0; row < tier.seatRows; row++) {
     // Each row sits midway through its slice of the tier.
     const rowOffset = tier.innerOffsetPx + (row + 0.5) * rowSpacing;
@@ -179,6 +199,10 @@ const drawTierFans = (
           lift = -1 * fall * wave.strength;
         }
       }
+      // Front-row lean: only the inner-most row, modulated by simTime.
+      if (row === 0 && arousalLift > 0 && leanLfo > 0) {
+        lift -= leanLfo * arousalLift;
+      }
       const colorRoll = rand01(seatId, 1);
       let fanColor: string;
       if (colorRoll < HAT_HIGHLIGHT && palette.length > 0) {
@@ -186,8 +210,9 @@ const drawTierFans = (
       } else {
         fanColor = SKIN_TONES[hash32(seatId, 3) % SKIN_TONES.length]!;
       }
-      // Slow flicker — 1 in ~150 seats brightens for a beat.
-      if (rand01(seatId, flickerEpoch) > 0.985) {
+      // Camera flashes — threshold drops with arousal so a roar fills the
+      // bowl with brief flickers.
+      if (rand01(seatId, fastEpoch) > flickerThreshold) {
         fanColor = '#ffffff';
       }
       ctx.fillStyle = fanColor;
@@ -238,13 +263,38 @@ const drawRoofSupports = (
   ctx.restore();
 };
 
+// Multipliers from the live CrowdState → density bump, flicker rate,
+// front-row lean. Quantized to keep frame-to-frame seat-id hashes stable.
+interface CrowdMods {
+  readonly densityMul: number;
+  readonly flickerThreshold: number;
+  readonly arousalLift: number;
+}
+
+const crowdModsFor = (state?: CrowdState): CrowdMods => {
+  if (!state) {
+    return { densityMul: 1, flickerThreshold: 0.985, arousalLift: 0 };
+  }
+  // Quantize energy to 0.1 buckets so density doesn't churn each frame.
+  const eq = Math.round(state.energy * 10) / 10;
+  // 0.85x at no energy, up to 1.10x at peak — keeps things readable.
+  const densityMul = 0.85 + eq * 0.25;
+  // Arousal in [0,1] → flicker threshold in [0.985, 0.96].
+  const flickerThreshold = 0.985 - state.arousal * 0.025;
+  // Front-row lean — up to 1px on a peak roar.
+  const arousalLift = state.arousal * 1.0;
+  return { densityMul, flickerThreshold, arousalLift };
+};
+
 // Public entrypoint — draws all back-of-bowl layers (concrete + upper deck +
 // roof) before the field is drawn. The lower-bowl seats and front railing
 // are deferred to drawStadiumBowlFront so the field/wall/dugouts can slot
 // between them.
 export const drawStadiumBowlBack = (args: CrowdArgs): void => {
-  const { ctx, atmosphere, bowl, inning, simTime } = args;
-  const density = densityForInning(atmosphere.crowdDensityCurve, inning);
+  const { ctx, atmosphere, bowl, inning, simTime, crowdState } = args;
+  const baseDensity = densityForInning(atmosphere.crowdDensityCurve, inning);
+  const mods = crowdModsFor(crowdState);
+  const density = Math.min(0.95, baseDensity * mods.densityMul);
   const wave =
     args.waveStrength && args.waveStrength > 0 && args.waveCenterAngleDeg !== undefined
       ? { centerDeg: args.waveCenterAngleDeg, strength: args.waveStrength }
@@ -260,6 +310,8 @@ export const drawStadiumBowlBack = (args: CrowdArgs): void => {
     simTime,
     0xa1c3,
     wave,
+    mods.flickerThreshold,
+    0, // upper-deck doesn't lean
   );
 
   // Roof — facade band + a couple of supports peeking into the sky.
@@ -270,8 +322,10 @@ export const drawStadiumBowlBack = (args: CrowdArgs): void => {
 // Lower-bowl seats + front railing. Drawn AFTER the field, dugouts, and
 // foul poles so the front row reads as right next to the action.
 export const drawStadiumBowlFront = (args: CrowdArgs): void => {
-  const { ctx, atmosphere, bowl, inning, simTime } = args;
-  const density = densityForInning(atmosphere.crowdDensityCurve, inning);
+  const { ctx, atmosphere, bowl, inning, simTime, crowdState } = args;
+  const baseDensity = densityForInning(atmosphere.crowdDensityCurve, inning);
+  const mods = crowdModsFor(crowdState);
+  const density = Math.min(0.95, baseDensity * mods.densityMul);
   const wave =
     args.waveStrength && args.waveStrength > 0 && args.waveCenterAngleDeg !== undefined
       ? { centerDeg: args.waveCenterAngleDeg, strength: args.waveStrength }
@@ -286,6 +340,8 @@ export const drawStadiumBowlFront = (args: CrowdArgs): void => {
     simTime,
     0xfac3,
     wave,
+    mods.flickerThreshold,
+    mods.arousalLift,
   );
   drawFrontRailing(ctx, bowl.front);
 };

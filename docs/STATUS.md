@@ -3,7 +3,7 @@
 A current-state map so a fresh session doesn't have to re-survey the repo.
 Update this file whenever you finish a chunk. Keep it short.
 
-Last reviewed: 2026-04-27 (after coaching-staff sub-pass — head + 1B + 3B coaches per team; 3B coach gates send-on-single + tag-ups; head coach nudges infield shift).
+Last reviewed: 2026-04-27 (after crowd-ambience pass — `/ambience` module produces a continuous CrowdState; audio bed + crowd reactions + per-batter walk-up jingles wired through new audio channel groups; renderer now drives wave lift, density bumps, flicker rate, tower glow, and a home-color horizon tint off the same signal).
 
 ## Phase status
 
@@ -13,7 +13,7 @@ Last reviewed: 2026-04-27 (after coaching-staff sub-pass — head + 1B + 3B coac
 | 1 — Sim MVP | ✅ shipped | `PHASE_1.md`. 640 players, schedule, pitch-by-pitch, deterministic. |
 | 2 — Render MVP | ✅ shipped | `PHASE_2.md`. Canvas, scene reducer, interp, sprites. |
 | 3 — Multi-game + UI | ✅ shipped | `PHASE_3.md`. 8 channels, switcher, standings strip. |
-| 4 — Stadium Identity + Polish | ⚠️ partial | Quirks in sim ✅. Stadium visuals ✅ (`PHASE_4_STADIUM_VISUALS.md`). Fence-aware HR sim ✅ (`PHASE_4_FENCE_AWARE_HR.md`: `wallDistanceAtAngle` gates rolled home runs against real fence geometry; short-porch / deep-center HR multipliers retired in favor of emergent park factors). Weather, chiptune, ambient crowd loop ❌. |
+| 4 — Stadium Identity + Polish | ⚠️ partial | Quirks in sim ✅. Stadium visuals ✅ (`PHASE_4_STADIUM_VISUALS.md`). Fence-aware HR sim ✅ (`PHASE_4_FENCE_AWARE_HR.md`). Crowd ambience ✅ (`PHASE_4_CROWD_AMBIENCE.md`): `/ambience` reducer drives audio bed + crowd reactions + walk-up jingles + visual wave / density / lighting from one CrowdState. Weather, chiptune ❌. |
 | 5 — Manager Knobs | ❌ not started | `/director` is a one-line stub. No nudges. |
 | 5.5 — Stats + Projections + Menus | ⚠️ partial | `PHASE_5_5*.md`. Aggregator, splits, WPA, projections, all 5 menus shipped. Batter-vs-pitcher matchup aggregation + on-canvas batter card with portrait + season AVG/HR/RBI + all-time BvP line shipped (`PHASE_5_5_BATTER_CARD.md`). |
 | 6 — Persistence Across Seasons | ⚠️ partial | `PHASE_6.md`. History schema + multi-season pre-sim ✅. Aging, retirement, draft, free agency, disk save ❌. |
@@ -26,7 +26,8 @@ Last reviewed: 2026-04-27 (after coaching-staff sub-pass — head + 1B + 3B coac
 | `/world` | League snapshot, persistent state types | Players carry `heightFt`, per-pitcher zone tendencies, per-batter zone xBA prefs. Teams now carry a 3-coach `CoachingStaff` (head / 1B / 3B). `stadium-geometry.ts` shares wall-distance helpers between `/sim` (HR gate) and `/render` (wall draw). Static across seasons (no aging). |
 | `/render` | Canvas renderer, scene reducer, sprites, HUD | Phase 2/3 complete + 8-bit strike-zone viewer in HUD + per-player sprite-size variance from listed height. Stadium visuals shipped: per-stadium wall arc (`wall.ts`), grass patterns (`grass-patterns.ts`), warning track / foul poles / dugouts / batter's boxes / on-deck circles (`stadium-chrome.ts`), crowd (`crowd.ts`), quirk decorations (`stadium-cosmetics.ts`), day/night palette swap. No weather. |
 | `/ui` | Five DOM menus (live/league/team/player/history), nav stack, sortable tables | Complete + pitcher heat map + batter xBA-by-zone in player view (sample-gated). No nudge controls. |
-| `/audio` | SFX dispatcher wired to SimEvents, audition page | ~5 SFX. No ambient crowd loop, no chiptune. |
+| `/audio` | SFX dispatcher + crowd bed + reaction layers + walk-up jingles | 10 SFX + procedural crowd bed (pink-noise + filter LFO + breathy pad), 8 reaction synths (roar/cheer/oo/gasp/groan/applause-tail/two-strike-clap/rally-clap), per-batter walk-up jingle generator. Channel-group bus with side-chain ducking. No vendored chiptune music yet. |
+| `/ambience` | Crowd-state reducer + leverage + star-set + wave envelopes | New module. Pure function of (SimEvent batch, dt) → continuous CrowdState (energy/arousal/mood/attention) + discrete reaction pulses. Read by `/audio` and `/render` so they react cohesively. |
 | `/persist` | SaveAdapter interface | **In-memory only.** No IndexedDB yet. |
 | `/season` | Schedule, history rollups, lineups | Schedule + history ✅. Playoffs are schema only — no games run. Offseason orchestration ❌. |
 | `/director` | User manager nudges → sim input | **One-line placeholder.** |
@@ -37,9 +38,9 @@ Last reviewed: 2026-04-27 (after coaching-staff sub-pass — head + 1B + 3B coac
 
 ## Tech stack
 
-TypeScript 5.7 + Vite 6 + Canvas2D. Vitest 2.1 (97 tests). ESLint 9 flat config
+TypeScript 5.7 + Vite 6 + Canvas2D. Vitest 2.1 (117 tests). ESLint 9 flat config
 with `eslint-plugin-import-x` enforcing the `/sim` boundary. Prettier 3.4.
-**Zero runtime dependencies.** Bundle ~145 KB / ~47 KB gzipped.
+**Zero runtime dependencies.** Bundle ~204 KB / ~67 KB gzipped.
 
 ## Conventions worth remembering
 
