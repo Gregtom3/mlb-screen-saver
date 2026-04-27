@@ -117,7 +117,12 @@ export const createRenderLoop = (
   let eventIdx = 0;
   // Parallel cursor through the precomputed animation-cue list (derived
   // from the event log). Recomputed whenever the active game changes.
-  let animCues: readonly AnimAudioCue[] = computeAnimAudioCues(initialGame.events);
+  let animCues: readonly AnimAudioCue[] = computeAnimAudioCues(
+    initialGame.events,
+    initialGame.sceneCtx.isStarBatter
+      ? { isStarBatter: initialGame.sceneCtx.isStarBatter }
+      : {},
+  );
   let animCueIdx = 0;
   let hoveredPlayerId: PlayerId | null = null;
   // Last drawn scene + transform, retained so the app can hit-test the
@@ -287,7 +292,12 @@ export const createRenderLoop = (
       // Re-anchor the cursor so we don't fire SFX for events that happened
       // before we tuned in to this channel.
       eventIdx = findIdxAfter(game, simTime);
-      animCues = computeAnimAudioCues(newGame.events);
+      animCues = computeAnimAudioCues(
+        newGame.events,
+        newGame.sceneCtx.isStarBatter
+          ? { isStarBatter: newGame.sceneCtx.isStarBatter }
+          : {},
+      );
       animCueIdx = findAnimIdxAfter(animCues, simTime);
       // Channel changes invalidate the prior scene's player ids.
       hoveredPlayerId = null;

@@ -197,21 +197,13 @@ export const createAmbienceReducer = (
         case 'pitch': {
           const r = ev.pitch.result;
           mirror.currentBatterId = ev.batterId;
-          // Walk-up jingle: emit once per new batter. The pitcher coming
-          // set means the at-bat just kicked off — first pitch is the
-          // anchor we trigger off of.
+          // Walk-up jingle is now scheduled by /render/anim-cues so it
+          // can lead in *after* the prior play settles instead of stepping
+          // on it. The reducer still tracks the batter change for arousal
+          // bumps, but it no longer emits the audio pulse.
           if (mirror.lastWalkupBatterId !== ev.batterId) {
             mirror.lastWalkupBatterId = ev.batterId;
             const isStar = stars.has(ev.batterId);
-            // The walkup-start fires immediately, audio side fades it
-            // before the first pitch lands at the plate.
-            pulses.push({
-              kind: 'walkup-start',
-              intensity: isStar ? 0.95 : 0.55,
-              durationMs: isStar ? 4500 : 3200,
-              side: battingSide(mirror),
-              playerId: ev.batterId,
-            });
             // Star at the plate gets a small arousal pop.
             if (isStar && battingSide(mirror) === 'home') {
               bumpArousal(0.18);

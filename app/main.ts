@@ -192,6 +192,7 @@ const buildGameInput = (
 interface SceneCtxExtras {
   readonly seasonAggregates?: SeasonAggregates;
   readonly careerBvp?: ReadonlyMap<PlayerId, ReadonlyMap<PlayerId, BvpLine>>;
+  readonly isStarBatter?: (playerId: PlayerId) => boolean;
 }
 
 const buildSceneCtxFor = (
@@ -227,6 +228,7 @@ const buildSceneCtxFor = (
     stadium,
     homeTeamPrimary: homeTeam.colors.primary,
     awayTeamPrimary: awayTeam.colors.primary,
+    ...(extras.isStarBatter ? { isStarBatter: extras.isStarBatter } : {}),
     ...(extras.seasonAggregates ? { seasonAggregates: extras.seasonAggregates } : {}),
     ...(extras.careerBvp ? { careerBvp: extras.careerBvp } : {}),
   };
@@ -440,14 +442,31 @@ const main = () => {
     retiredPlayers: new Set(),
   });
 
+  // Per-team player rosters — used by buildStarSet for the home/away player
+  // pools. Built once before liveGames so the SceneContext for each channel
+  // can carry an `isStarBatter` predicate (drives walk-up jingle intensity).
+  const teamPlayersById = new Map<TeamId, Player[]>();
+  for (const p of league.players) {
+    if (p.teamId === null) continue;
+    const list = teamPlayersById.get(p.teamId) ?? [];
+    list.push(p);
+    teamPlayersById.set(p.teamId, list);
+  }
+
   // Phase 2 of the live-game build: now that aggregatesWithLive and history
   // exist, mint a SceneContext per game wired to both. The HUD batter card
   // pulls season AVG/HR/RBI from `aggregatesWithLive` and "vs PITCHER"
   // matchup totals from a combination of that map plus history.careerBvp.
   const liveGames: LiveGame[] = liveGameSeeds.map((seed) => {
+    const stars = buildStarSet({
+      homeTeamPlayers: teamPlayersById.get(seed.home.id) ?? [],
+      awayTeamPlayers: teamPlayersById.get(seed.away.id) ?? [],
+      aggregates: aggregatesWithLive,
+    });
     const sceneCtx = buildSceneCtxFor(league, seed.input, seed.home, seed.away, seed.stadium, {
       seasonAggregates: aggregatesWithLive,
       careerBvp: history.careerBvp,
+      isStarBatter: (id) => stars.has(id),
     });
     return {
       events: seed.events,
@@ -476,13 +495,6 @@ const main = () => {
   // the SFX dispatcher does, but produces the continuous CrowdState that
   // both audio (bed, reactions, walk-up) and the renderer (bowl wave,
   // density, lighting) read each frame.
-  const teamPlayersById = new Map<TeamId, Player[]>();
-  for (const p of league.players) {
-    if (p.teamId === null) continue;
-    const list = teamPlayersById.get(p.teamId) ?? [];
-    list.push(p);
-    teamPlayersById.set(p.teamId, list);
-  }
   const buildAmbienceFor = (g: LiveGame) => {
     const stars = buildStarSet({
       homeTeamPlayers: teamPlayersById.get(g.entry.homeTeamId) ?? [],
