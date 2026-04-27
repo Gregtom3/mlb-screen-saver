@@ -32,12 +32,14 @@ const playSeasonChunk = (seed: number, days: number): {
         battingOrder: homeLineup.battingOrder,
         startingPitcherId: homeLineup.startingPitcher,
         bullpen: homeLineup.bullpen,
+        defenseByPosition: homeLineup.defenseByPosition,
       };
       const awaySide: SideInput = {
         teamId: away.id,
         battingOrder: awayLineup.battingOrder,
         startingPitcherId: awayLineup.startingPitcher,
         bullpen: awayLineup.bullpen,
+        defenseByPosition: awayLineup.defenseByPosition,
       };
       const input: GameInput = {
         gameId: entry.gameId,

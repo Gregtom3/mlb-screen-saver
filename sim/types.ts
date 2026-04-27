@@ -4,6 +4,7 @@
 import type {
   Player,
   PlayerId,
+  Position,
   TeamId,
   StadiumId,
   GameId,
@@ -155,6 +156,9 @@ export interface SideInput {
   readonly battingOrder: readonly PlayerId[]; // exactly 9
   readonly startingPitcherId: PlayerId;
   readonly bullpen: readonly PlayerId[];
+  // Position → player. P slot is overridden at runtime to the active pitcher
+  // so mid-game changes are reflected. DH is allowed to be absent.
+  readonly defenseByPosition: Readonly<Partial<Record<Position, PlayerId>>>;
 }
 
 export interface GameInput {

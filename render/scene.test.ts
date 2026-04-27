@@ -20,6 +20,7 @@ const buildContextAndEvents = () => {
       battingOrder: l.battingOrder,
       startingPitcherId: l.startingPitcher,
       bullpen: l.bullpen,
+      defenseByPosition: l.defenseByPosition,
     };
   })();
   const away: SideInput = (() => {
@@ -29,6 +30,7 @@ const buildContextAndEvents = () => {
       battingOrder: l.battingOrder,
       startingPitcherId: l.startingPitcher,
       bullpen: l.bullpen,
+      defenseByPosition: l.defenseByPosition,
     };
   })();
   const playerIndex = new Map(league.players.map((p) => [p.id, p]));

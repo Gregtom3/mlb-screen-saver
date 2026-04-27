@@ -1,4 +1,4 @@
-import type { Player, PlayerId } from '../world/types.js';
+import type { Player, PlayerId, Position } from '../world/types.js';
 import type { PRNG } from './prng.js';
 import { createPRNG } from './prng.js';
 import type {
@@ -304,6 +304,54 @@ interface InPlayResult {
   readonly ballPath: BallPath;
   readonly fielderId?: PlayerId;
 }
+
+// ---- fielder-error model -----------------------------------------------
+//
+// Errors only fire on would-be outs that involve fielding a ball. The
+// responsible fielder is picked from the ball's spray + launch; their
+// `glove` rating drives the per-chance error probability. League-average
+// glove → ~2.2%; combined with ~20 fielding chances per side per game,
+// that's ~0.4 errors per team per game (MLB sits around 0.6).
+
+const sprayDegOf = (ballPath: BallPath): number =>
+  (Math.atan2(ballPath.landingX, Math.max(1, ballPath.landingY)) * 180) / Math.PI;
+
+const pickInfieldPosition = (spray: number): Position => {
+  if (spray < -18) return '3B';
+  if (spray < -6) return 'SS';
+  if (spray < 6) return 'P';
+  if (spray < 18) return '2B';
+  return '1B';
+};
+
+const pickOutfieldPosition = (spray: number): Position => {
+  if (spray < -15) return 'LF';
+  if (spray < 15) return 'CF';
+  return 'RF';
+};
+
+const fielderPositionFor = (outcome: AtBatOutcome, ballPath: BallPath): Position | null => {
+  const spray = sprayDegOf(ballPath);
+  switch (outcome) {
+    case 'groundout':
+    case 'double-play':
+    case 'fielders-choice':
+    case 'popout':
+      return pickInfieldPosition(spray);
+    case 'flyout':
+    case 'sac-fly':
+      return pickOutfieldPosition(spray);
+    case 'lineout':
+      return ballPath.launchAngleDeg < 14
+        ? pickInfieldPosition(spray)
+        : pickOutfieldPosition(spray);
+    default:
+      return null;
+  }
+};
+
+const errorProbForGlove = (glove: number): number =>
+  clamp(0.022 - (glove - 50) * 0.0006, 0.003, 0.06);
 
 const simulateInPlay = (
   batter: Player,
@@ -688,6 +736,25 @@ const simulateAtBat = (
           ballPath: inPlayResult.ballPath,
         });
         break;
+      }
+    }
+  }
+
+  // Fielder-error roll: would-be outs convert to reached-on-error based on
+  // the responsible fielder's glove rating. P slot uses the active pitcher
+  // (defenseByPosition.P is set at lineup time and goes stale on a sub).
+  if (inPlayResult) {
+    const fieldPos = fielderPositionFor(outcome, inPlayResult.ballPath);
+    if (fieldPos !== null) {
+      const fielderId =
+        fieldPos === 'P'
+          ? pitcherId
+          : fielding.input.defenseByPosition[fieldPos];
+      if (fielderId) {
+        const fielder = playerIndex.get(fielderId);
+        if (fielder && rng.next() < errorProbForGlove(fielder.ratings.glove)) {
+          outcome = 'reached-on-error';
+        }
       }
     }
   }

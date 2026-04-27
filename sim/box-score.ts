@@ -100,8 +100,8 @@ export const buildBoxScore = (events: readonly SimEvent[], input: GameInput): Bo
   let runsAway = 0;
   let hitsHome = 0;
   let hitsAway = 0;
-  const errorsHome = 0;
-  const errorsAway = 0;
+  let errorsHome = 0;
+  let errorsAway = 0;
 
   const homeBatters = new Map<PlayerId, BatterLine>();
   const awayBatters = new Map<PlayerId, BatterLine>();
@@ -189,6 +189,12 @@ export const buildBoxScore = (events: readonly SimEvent[], input: GameInput): Bo
         if (isHitLike) {
           if (currentHalf === 'top') hitsAway += 1;
           else hitsHome += 1;
+        }
+
+        if (ev.outcome === 'reached-on-error') {
+          // Error charged to the fielding side (opposite of who's batting).
+          if (currentHalf === 'top') errorsHome += 1;
+          else errorsAway += 1;
         }
 
         // Pitcher stats: credit the pitcher who finished this PA.

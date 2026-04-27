@@ -68,12 +68,14 @@ const main = () => {
     battingOrder: homeLineup.battingOrder,
     startingPitcherId: homeLineup.startingPitcher,
     bullpen: homeLineup.bullpen,
+    defenseByPosition: homeLineup.defenseByPosition,
   };
   const awaySide: SideInput = {
     teamId: awayTeam.id,
     battingOrder: awayLineup.battingOrder,
     startingPitcherId: awayLineup.startingPitcher,
     bullpen: awayLineup.bullpen,
+    defenseByPosition: awayLineup.defenseByPosition,
   };
 
   // Per-game seed: master seed XOR'd with the game id hash so games are independent

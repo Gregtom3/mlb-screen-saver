@@ -22,7 +22,7 @@ Last reviewed: 2026-04-27 (after PHASE_6 history merge).
 
 | Path | What it owns | State |
 |------|--------------|-------|
-| `/sim` | Pure sim engine, event log, box score, stadium-effect plugins | Solid. Missing: errors, WPs, pickoffs, SB, fatigue, advanced baserunning. |
+| `/sim` | Pure sim engine, event log, box score, stadium-effect plugins | Solid. Errors wired (glove rating → reached-on-error). Missing: WPs, pickoffs, SB, fatigue, advanced baserunning. |
 | `/world` | League snapshot, persistent state types | Static across seasons (no aging). |
 | `/render` | Canvas renderer, scene reducer, sprites, HUD | Phase 2/3 complete. No day/night or weather. |
 | `/ui` | Five DOM menus (live/league/team/player/history), nav stack, sortable tables | Complete. No nudge controls. |

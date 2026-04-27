@@ -18,12 +18,14 @@ const buildInputForFirstGame = (masterSeed: number, gameSeed: number): GameInput
     battingOrder: homeLineup.battingOrder,
     startingPitcherId: homeLineup.startingPitcher,
     bullpen: homeLineup.bullpen,
+    defenseByPosition: homeLineup.defenseByPosition,
   };
   const away: SideInput = {
     teamId: awayTeam.id,
     battingOrder: awayLineup.battingOrder,
     startingPitcherId: awayLineup.startingPitcher,
     bullpen: awayLineup.bullpen,
+    defenseByPosition: awayLineup.defenseByPosition,
   };
   return {
     gameId: entry.gameId,
@@ -101,5 +103,47 @@ describe('runGame sanity', () => {
     const sumBot = box.lineScore.innings.reduce((s, i) => s + (i.bottom ?? 0), 0);
     expect(sumTop).toBe(box.lineScore.away.runs);
     expect(sumBot).toBe(box.lineScore.home.runs);
+  });
+});
+
+describe('fielder errors', () => {
+  it('produces reached-on-error outcomes across a 30-game batch', () => {
+    let totalErrors = 0;
+    for (let s = 1; s <= 30; s++) {
+      const events = runGame(buildInputForFirstGame(0xba_5e_ba_11, s));
+      for (const ev of events) {
+        if (ev.kind === 'atBatEnd' && ev.outcome === 'reached-on-error') {
+          totalErrors += 1;
+        }
+      }
+    }
+    // ~0.4-0.5 errors per team per game * 60 team-games = ~24-30 expected.
+    // Wide bound to absorb seed variance and future tuning.
+    expect(totalErrors).toBeGreaterThan(5);
+    expect(totalErrors).toBeLessThan(120);
+  });
+
+  it('box-score errors equal reached-on-error events, charged to fielding side', () => {
+    for (const seed of [3, 17, 42, 99]) {
+      const input = buildInputForFirstGame(0xba_5e_ba_11, seed);
+      const events = runGame(input);
+      const box = buildBoxScore(events, input);
+
+      // Replay outcomes by half-inning to determine the fielding side per ROE.
+      let half: 'top' | 'bottom' = 'top';
+      let homeErr = 0;
+      let awayErr = 0;
+      for (const ev of events) {
+        if (ev.kind === 'inningEnd') {
+          half = half === 'top' ? 'bottom' : 'top';
+        } else if (ev.kind === 'atBatEnd' && ev.outcome === 'reached-on-error') {
+          // Top half: away bats, home fields → home error. Bottom: vice versa.
+          if (half === 'top') homeErr += 1;
+          else awayErr += 1;
+        }
+      }
+      expect(box.lineScore.home.errors).toBe(homeErr);
+      expect(box.lineScore.away.errors).toBe(awayErr);
+    }
   });
 });
