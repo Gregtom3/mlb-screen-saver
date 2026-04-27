@@ -69,9 +69,16 @@ const PITCH_FLIGHT_TICKS = 2 * BALL_TIME_SCALE;        // mound→plate ball fli
 // lobs it back to the mound. The lob is intentionally lazy — it reads as the
 // pitcher and catcher resetting between pitches rather than a real throw.
 const CATCHER_HOLD_TICKS = 3;
-// Tripled vs. the original 7-tick lob: the slow arc gives the eye time to
-// settle and sells the "between-pitch reset" beat.
-const CATCHER_LOB_TICKS = 21;
+// Halved vs. the prior 21-tick lob: the slow arc was hanging in the air a
+// beat too long. 10 ticks (~0.5 wall-sec at default playback) reads as a
+// relaxed reset without dragging.
+const CATCHER_LOB_TICKS = 10;
+// First pitch of every at-bat is delayed by this many ticks of ball-still-
+// at-mound before the visual flight begins. Anchored to the moment the new
+// batter has walked into the box; gives the eye a beat to register the new
+// matchup before the action starts. ~30 ticks ≈ 1.5 wall-sec at the default
+// 20 ticks/sec playback rate.
+const FIRST_PITCH_HOLD_TICKS = 30;
 const RUNNER_TRAVEL_TICKS_PER_BASE = 7; // ~7 sim sec/base — pleasant screensaver pace, slower than real-time
 // On-deck batter pacing during the gap between at-bats. The 25-tick gap
 // between atBatEnd and the next pitch breaks down as: a settle window
@@ -452,6 +459,10 @@ interface PitchInProgress {
   // Whether this pitch was actually swung at — drives the bat-swing animation.
   // Take pitches (ball / called-strike / hit-by-pitch) shouldn't move the bat.
   readonly wasSwing: boolean;
+  // True for the first pitch of a new at-bat. The renderer delays the
+  // ball's visual flight by FIRST_PITCH_HOLD_TICKS so the new batter has a
+  // beat to settle in the box before the action starts.
+  readonly isFirstOfAtBat: boolean;
 }
 interface ContactInProgress {
   readonly t: number;
@@ -574,10 +585,12 @@ export const buildScene = (
       case 'pitch': {
         // New batter? Reset the "ran-out" flag so the next at-bat-end
         // triggers an outgoing-walk only if this batter never reaches base.
-        if (ev.batterId !== currentBatterId) currentBatterRanOut = false;
+        const isNewBatter = ev.batterId !== currentBatterId;
+        if (isNewBatter) currentBatterRanOut = false;
         currentBatterId = ev.batterId;
         // Any pitch event closes the inter-at-bat dead time (the on-deck
         // batter has reached the box; the at-bat is live).
+        const wasInAtBatGap = lastAtBatEndT !== null;
         lastAtBatEndT = null;
         const r = ev.pitch.result;
         if (r === 'ball') balls += 1;
@@ -599,7 +612,18 @@ export const buildScene = (
         ) {
           lastThirdStrikePitchT = ev.t;
         }
-        lastPitch = { t: ev.t, outcomeKnown: r === 'in-play', wasSwing };
+        // First pitch of an at-bat: gets the FIRST_PITCH_HOLD_TICKS visual
+        // delay so the new batter has a beat at the plate before the ball
+        // flies. Detected as either "new batterId" or "we just emerged
+        // from the inter-at-bat gap" — gameStart's first pitch picks up
+        // this flag too via the new-batter branch.
+        const isFirstOfAtBat = isNewBatter || wasInAtBatGap;
+        lastPitch = {
+          t: ev.t,
+          outcomeKnown: r === 'in-play',
+          wasSwing,
+          isFirstOfAtBat,
+        };
         currentAbPitches.push({
           result: r,
           locationZone: ev.pitch.locationZone,
@@ -950,7 +974,10 @@ export const buildScene = (
     const boxX = batter.bats === 'L' ? 4.5 : -4.5;
     let swingFrac = 0;
     if (lastPitch && lastPitch.wasSwing) {
-      const elapsed = simTime - lastPitch.t;
+      // First-pitch hold offsets the swing by the same amount as the ball
+      // flight, so the bat moves with the actual pitch, not a phantom one.
+      const flightOffset = lastPitch.isFirstOfAtBat ? FIRST_PITCH_HOLD_TICKS : 0;
+      const elapsed = simTime - lastPitch.t - flightOffset;
       const swingStartT = PITCH_FLIGHT_TICKS * 0.55;
       const swingEndT = PITCH_FLIGHT_TICKS * 0.95;
       if (elapsed > swingStartT && elapsed < swingEndT + 4) {
@@ -1014,7 +1041,23 @@ export const buildScene = (
       ballInFlight = false;
     }
   } else if (lastPitch) {
-    const elapsed = simTime - lastPitch.t;
+    // First pitch of an at-bat: ball stays at the mound for FIRST_PITCH_
+    // HOLD_TICKS (~1.5 wall-sec) after the new batter has settled in the
+    // box, before the visual flight begins. Subsequent pitches use no
+    // hold — the cradle-and-lob already paces the inter-pitch beat.
+    const flightDelay = lastPitch.isFirstOfAtBat ? FIRST_PITCH_HOLD_TICKS : 0;
+    const flightStartT = lastPitch.t + flightDelay;
+    if (simTime < flightStartT) {
+      // Pre-flight: ball sits on the mound, fully visible (the new batter
+      // is staring down the pitcher).
+      ballPos = PITCHERS_MOUND;
+      ballHeight = 0;
+      ballVisible = true;
+      ballInFlight = false;
+      // Fall through to the rest of the function — the rest of the ball-
+      // state branches don't apply during this hold.
+    } else {
+    const elapsed = simTime - flightStartT;
     if (elapsed <= PITCH_FLIGHT_TICKS) {
       const frac = Math.max(0, Math.min(1, elapsed / PITCH_FLIGHT_TICKS));
       ballPos = lerpPoint(PITCHERS_MOUND, HOME_PLATE, frac);
@@ -1089,6 +1132,7 @@ export const buildScene = (
         }
       }
     }
+    } // end: else (simTime >= flightStartT)
   }
 
   // Inning-end ball tossing — between the 3rd-out's settle and the inningEnd
