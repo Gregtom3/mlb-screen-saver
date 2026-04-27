@@ -409,20 +409,25 @@ interface InPlayResult {
 const sprayDegOf = (ballPath: BallPath): number =>
   (Math.atan2(ballPath.landingX, Math.max(1, ballPath.landingY)) * 180) / Math.PI;
 
-// Bands sized so SS/2B own the wide middle ranges they actually cover and
-// the pitcher only handles the narrow up-the-middle slice. Combined with the
-// triangular spray distribution, this yields roughly MLB-shaped chance counts.
-//
-// `shiftDeg` slides the slice boundaries by N degrees of spray angle (the
-// fielding head coach's tactical nudge against pull hitters): >0 moves the
-// infield toward right field (vs LHB pull), <0 moves it toward left field
-// (vs RHB pull). Magnitude is capped well below a slice width so the shift
-// "tilts" coverage rather than swapping fielders' jobs.
-const pickInfieldPosition = (spray: number, shiftDeg: number): Position => {
-  if (spray < -20 + shiftDeg) return '3B';
-  if (spray < -3 + shiftDeg) return 'SS';
-  if (spray < 3 + shiftDeg) return 'P';
-  if (spray < 20 + shiftDeg) return '2B';
+// Each coverage boundary combines two independent adjustments:
+//   1. `shiftDeg` — head coach's tactical infield shift: >0 pushes all
+//      boundaries toward RF (vs LHB pull), <0 toward LF (vs RHB pull).
+//   2. `rangeOf` — per-fielder range rating shifts each boundary individually:
+//      a high-range SS steals ≤2.5° from P / 3B; a low-range one cedes it.
+// Nominal zones: 3B(<-22), SS(-22…-2), P(-2…+2), 2B(+2…+22), 1B(>+22).
+// Exported for unit tests; not part of the public API.
+const RANGE_SHIFT_SCALE = 0.05; // degrees per rating point from 50
+export const pickInfieldPosition = (
+  spray: number,
+  shiftDeg: number,
+  rangeOf: (pos: Position) => number = () => 50,
+): Position => {
+  const bnd = (left: Position, right: Position, nominal: number): number =>
+    nominal + shiftDeg + (rangeOf(left) - rangeOf(right)) * RANGE_SHIFT_SCALE;
+  if (spray < bnd('3B', 'SS', -22)) return '3B';
+  if (spray < bnd('SS', 'P',   -2)) return 'SS';
+  if (spray < bnd('P',  '2B',   2)) return 'P';
+  if (spray < bnd('2B', '1B',  22)) return '2B';
   return '1B';
 };
 
@@ -448,6 +453,7 @@ const fielderPositionFor = (
   outcome: AtBatOutcome,
   ballPath: BallPath,
   shiftDeg: number,
+  rangeOf: (pos: Position) => number = () => 50,
 ): Position | null => {
   const spray = sprayDegOf(ballPath);
   switch (outcome) {
@@ -455,13 +461,13 @@ const fielderPositionFor = (
     case 'double-play':
     case 'fielders-choice':
     case 'popout':
-      return pickInfieldPosition(spray, shiftDeg);
+      return pickInfieldPosition(spray, shiftDeg, rangeOf);
     case 'flyout':
     case 'sac-fly':
       return pickOutfieldPosition(spray, shiftDeg);
     case 'lineout':
       return ballPath.launchAngleDeg < 14
-        ? pickInfieldPosition(spray, shiftDeg)
+        ? pickInfieldPosition(spray, shiftDeg, rangeOf)
         : pickOutfieldPosition(spray, shiftDeg);
     default:
       return null;
@@ -990,7 +996,14 @@ const simulateAtBat = (
   // the responsible fielder's glove rating. P slot uses the active pitcher
   // (defenseByPosition.P is set at lineup time and goes stale on a sub).
   if (inPlayResult) {
-    const fieldPos = fielderPositionFor(outcome, inPlayResult.ballPath, shiftDeg);
+    // Range lookup so zone boundaries are shifted by each fielder's range
+    // rating — a high-range SS steals coverage from the pitcher and 3B.
+    const infielderRangeOf = (pos: Position): number => {
+      const id = pos === 'P' ? pitcherId : fielding.input.defenseByPosition[pos];
+      if (!id) return 50;
+      return playerIndex.get(id)?.ratings.range ?? 50;
+    };
+    const fieldPos = fielderPositionFor(outcome, inPlayResult.ballPath, shiftDeg, infielderRangeOf);
     if (fieldPos !== null) {
       const fielderId =
         fieldPos === 'P'
