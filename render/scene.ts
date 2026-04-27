@@ -1,4 +1,4 @@
-import type { Player, PlayerId, StadiumId, TeamId } from '../world/types.js';
+import type { Player, PlayerId, Stadium, StadiumId, TeamId } from '../world/types.js';
 import type { AtBatOutcome, BallPath, GameInput, SimEvent } from '../sim/types.js';
 import {
   HOME_PLATE,
@@ -116,6 +116,14 @@ interface SceneContext {
   // Per-stadium sky tint — typically derived from the home team's primary
   // color blended with a dark base, so each park has its own ambient feel.
   readonly skyColor: string;
+  // Optional full Stadium record for the renderer's stadium-chrome layers
+  // (warning track, foul poles, dugouts, crowd, quirk visuals). Optional so
+  // tests and ad-hoc callers can build a SceneContext without one — the
+  // renderer falls back to a placeholder ballpark when absent.
+  readonly stadium?: Stadium;
+  // Optional home-team primary color — used by the dugout trim layer to
+  // tint the home dugout's roof rim. Optional for the same reason as above.
+  readonly homeTeamPrimary?: string;
 }
 
 const fielderPositionFor = (

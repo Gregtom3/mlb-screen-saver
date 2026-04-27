@@ -29,6 +29,42 @@ export const FIELDER_HOME_POSITIONS = {
 export const BATTER_BOX_LEFT: FieldPoint = { x: -3.5, y: 0 };
 export const BATTER_BOX_RIGHT: FieldPoint = { x: 3.5, y: 0 };
 
+// Chalk box dimensions (4ft × 6ft each, MLB-spec). The batter stands at the
+// center; the box runs from the front of the plate forward toward the
+// pitcher and backward toward the catcher.
+export const BATTER_BOX_WIDTH_FT = 4;
+export const BATTER_BOX_DEPTH_FT = 6;
+
+// On-deck circles — a stride or two outside the batter's-box pair, between
+// the boxes and the dugouts. Standard MLB diameter is 5ft; the renderer
+// uses the world-coord radius below.
+export const ON_DECK_LEFT: FieldPoint = { x: -22, y: -4 };
+export const ON_DECK_RIGHT: FieldPoint = { x: 22, y: -4 };
+export const ON_DECK_RADIUS_FT = 2.5;
+
+// Dugouts — recessed rectangles flush to the backstop, centered on the
+// existing scene-side dugout markers (±75x in /render/scene.ts). Shape
+// chosen so the bench reads at screensaver scale: ~46ft wide × ~9ft deep.
+export const DUGOUT_LEFT_RECT = {
+  cx: -75,
+  cy: -22,
+  widthFt: 46,
+  depthFt: 9,
+} as const;
+export const DUGOUT_RIGHT_RECT = {
+  cx: 75,
+  cy: -22,
+  widthFt: 46,
+  depthFt: 9,
+} as const;
+
+// Backstop arc — the rounded fence behind the catcher. Sits ~60ft behind
+// home plate at its deepest point, sweeping foul-line to foul-line.
+export const BACKSTOP = {
+  centerY: -32,
+  radiusFt: 38,
+} as const;
+
 export const baseFor = (
   base: 0 | 1 | 2 | 3,
 ): FieldPoint => {

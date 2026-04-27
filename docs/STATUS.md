@@ -3,7 +3,7 @@
 A current-state map so a fresh session doesn't have to re-survey the repo.
 Update this file whenever you finish a chunk. Keep it short.
 
-Last reviewed: 2026-04-27 (after strike-zone viewer + per-player zone IDs).
+Last reviewed: 2026-04-27 (after stadium visuals — warning track, foul poles, dugouts, fans, varying field shape, quirk decorations).
 
 ## Phase status
 
@@ -13,7 +13,7 @@ Last reviewed: 2026-04-27 (after strike-zone viewer + per-player zone IDs).
 | 1 — Sim MVP | ✅ shipped | `PHASE_1.md`. 640 players, schedule, pitch-by-pitch, deterministic. |
 | 2 — Render MVP | ✅ shipped | `PHASE_2.md`. Canvas, scene reducer, interp, sprites. |
 | 3 — Multi-game + UI | ✅ shipped | `PHASE_3.md`. 8 channels, switcher, standings strip. |
-| 4 — Stadium Identity + Polish | ⚠️ partial | Quirks in sim ✅. Day/night, weather, crowd density, chiptune ❌. |
+| 4 — Stadium Identity + Polish | ⚠️ partial | Quirks in sim ✅. Stadium visuals ✅ (`PHASE_4_STADIUM_VISUALS.md`: warning track, foul poles, dugouts, batter's/on-deck boxes, per-stadium wall arc, grass-pattern registry, crowd, day/night, quirk decorations). Weather, chiptune, ambient crowd loop ❌. |
 | 5 — Manager Knobs | ❌ not started | `/director` is a one-line stub. No nudges. |
 | 5.5 — Stats + Projections + Menus | ⚠️ partial | `PHASE_5_5*.md`. Aggregator, splits, WPA, projections, all 5 menus shipped. |
 | 6 — Persistence Across Seasons | ⚠️ partial | `PHASE_6.md`. History schema + multi-season pre-sim ✅. Aging, retirement, draft, free agency, disk save ❌. |
@@ -24,7 +24,7 @@ Last reviewed: 2026-04-27 (after strike-zone viewer + per-player zone IDs).
 |------|--------------|-------|
 | `/sim` | Pure sim engine, event log, box score, stadium-effect plugins | Solid. Errors wired (glove rating → reached-on-error). Pitcher heat-map zone targeting + batter zone-pref outcome shifts wired. Missing: WPs, pickoffs, SB, fatigue, advanced baserunning. |
 | `/world` | League snapshot, persistent state types | Players carry `heightFt`, per-pitcher zone tendencies, per-batter zone xBA prefs. Static across seasons (no aging). |
-| `/render` | Canvas renderer, scene reducer, sprites, HUD | Phase 2/3 complete + 8-bit strike-zone viewer in HUD + per-player sprite-size variance from listed height. No day/night or weather. |
+| `/render` | Canvas renderer, scene reducer, sprites, HUD | Phase 2/3 complete + 8-bit strike-zone viewer in HUD + per-player sprite-size variance from listed height. Stadium visuals shipped: per-stadium wall arc (`wall.ts`), grass patterns (`grass-patterns.ts`), warning track / foul poles / dugouts / batter's boxes / on-deck circles (`stadium-chrome.ts`), crowd (`crowd.ts`), quirk decorations (`stadium-cosmetics.ts`), day/night palette swap. No weather. |
 | `/ui` | Five DOM menus (live/league/team/player/history), nav stack, sortable tables | Complete + pitcher heat map + batter xBA-by-zone in player view (sample-gated). No nudge controls. |
 | `/audio` | SFX dispatcher wired to SimEvents, audition page | ~5 SFX. No ambient crowd loop, no chiptune. |
 | `/persist` | SaveAdapter interface | **In-memory only.** No IndexedDB yet. |
@@ -37,7 +37,7 @@ Last reviewed: 2026-04-27 (after strike-zone viewer + per-player zone IDs).
 
 ## Tech stack
 
-TypeScript 5.7 + Vite 6 + Canvas2D. Vitest 2.1 (77 tests). ESLint 9 flat config
+TypeScript 5.7 + Vite 6 + Canvas2D. Vitest 2.1 (81 tests). ESLint 9 flat config
 with `eslint-plugin-import-x` enforcing the `/sim` boundary. Prettier 3.4.
 **Zero runtime dependencies.** Bundle ~145 KB / ~47 KB gzipped.
 

@@ -59,6 +59,21 @@ const fnv = (s: string): number => {
   return h >>> 0;
 };
 
+// Hash a string to a uniform [0, 1) so day/night picks are deterministic.
+const hashFloat01 = (s: string): number => (fnv(s) % 0x10000) / 0x10000;
+
+// Decide whether a game is played in daylight given the stadium's day-game
+// bias. Bias 0 = always night, 1 = always day. Stable per gameId.
+const isDayGameForGameId = (gameId: string, dayGameBias: number): boolean => {
+  return hashFloat01(`${gameId}|day`) < dayGameBias;
+};
+
+// Day vs night sky palettes — picked from a small fixed set so the screensaver
+// reads as time-of-day variation without hand-painting per stadium.
+const SKY_DAY = '#5a8fb8';
+const SKY_DUSK = '#3e4a72';
+const SKY_NIGHT_FALLBACK = '#0e1a26';
+
 const blendColors = (foreground: string, background: string, towardBg: number): string => {
   const parse = (hex: string) => {
     const c = hex.replace('#', '');
@@ -139,13 +154,26 @@ const buildSceneCtxFor = (
     league.teams.map((t) => [t.id, { primary: t.colors.primary, secondary: t.colors.secondary, accent: t.colors.accent }]),
   );
   const teamAbbr = new Map(league.teams.map((t) => [t.id, t.abbr]));
+  // Day/night per game: stable per gameId, weighted by the stadium's
+  // dayGameBias. Day games get a brighter sky; night games keep the dark
+  // home-color blend so the field reads warm under "the lights".
+  const isDay = isDayGameForGameId(input.gameId, stadium.atmosphere.dayGameBias);
+  const nightSky = blendColors(homeTeam.colors.primary, SKY_NIGHT_FALLBACK, 0.78);
+  const skyColor = isDay
+    ? blendColors(SKY_DAY, homeTeam.colors.primary, 0.18)
+    : hashFloat01(`${input.gameId}|dusk`) < 0.18
+      ? blendColors(SKY_DUSK, homeTeam.colors.primary, 0.25)
+      : nightSky;
+
   return {
     input,
     teamColors,
     teamAbbr,
     stadiumName: stadium.name,
     grassShade: stadium.atmosphere.grassShade,
-    skyColor: blendColors(homeTeam.colors.primary, '#0b0d10', 0.78),
+    skyColor,
+    stadium,
+    homeTeamPrimary: homeTeam.colors.primary,
   };
 };
 
