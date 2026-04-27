@@ -1,12 +1,14 @@
-import type { Stadium, Team, TeamId } from '../world/types.js';
+import type { Coach, Stadium, Team, TeamId } from '../world/types.js';
 import {
   battingAvg, era, formatAvg, formatEra, formatIp, formatRecord,
-  formatSigned, formatWhip, last10, ops, runDiff, sluggingPct,
+  formatSigned, formatWhip, last10, ops, runDiff,
   streak, whip, winPct,
 } from '../stats/derived.js';
 import { computeMagicNumber } from '../projections/montecarlo.js';
 import type { MenuContext } from './menu-shared.js';
 import { emptyState } from './menu-shared.js';
+import { coachPortraitDataUrl } from './portrait.js';
+import { starRating, starsToGlyphs } from '../stats/grades.js';
 
 export const renderTeam = (
   host: HTMLElement,
@@ -53,6 +55,7 @@ export const renderTeam = (
     <button data-tab="stats">Stats</button>
     <button data-tab="projections">Projections</button>
     <button data-tab="stadium">Stadium</button>
+    <button data-tab="staff">Staff</button>
   `;
   wrap.appendChild(tabs);
   const body = document.createElement('div');
@@ -66,6 +69,7 @@ export const renderTeam = (
     else if (tab === 'stats') renderTeamStats(body, team, ctx);
     else if (tab === 'projections') renderProjections(body, team, ctx);
     else if (tab === 'stadium') renderStadium(body, stadium);
+    else if (tab === 'staff') renderStaff(body, team);
   };
   tabs.querySelectorAll<HTMLButtonElement>('button[data-tab]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -273,6 +277,88 @@ const renderStadium = (host: HTMLElement, stadium: Stadium | undefined): void =>
   note.className = 'menu-hint';
   note.textContent = 'Park factors land with multi-season history (Phase 6).';
   host.appendChild(note);
+};
+
+// Per-role label and the subset of CoachRatings to show.
+const COACH_ROLE_META: Record<Coach['role'], {
+  title: string;
+  ratings: { key: keyof Coach['ratings']; label: string; desc: string }[];
+}> = {
+  head: {
+    title: 'Manager',
+    ratings: [
+      { key: 'tactics',  label: 'Tactics',  desc: 'Shifts infield coverage toward pull hitters' },
+      { key: 'morale',   label: 'Morale',   desc: 'Team-wide leadership & clubhouse cohesion (Phase 6+)' },
+    ],
+  },
+  'third-base': {
+    title: '3B Coach',
+    ratings: [
+      { key: 'aggression', label: 'Aggression', desc: 'Willingness to send runners home from second' },
+      { key: 'judgment',   label: 'Judgment',   desc: 'Avoids unnecessary outs on the basepaths' },
+    ],
+  },
+  'first-base': {
+    title: '1B Coach',
+    ratings: [
+      { key: 'baserunningCoaching', label: 'Baserunning',      desc: 'Stolen-base technique boost (active when steals ship)' },
+      { key: 'pickoffAwareness',    label: 'Pickoff Awareness', desc: 'Reduces pickoff vulnerability (active when pickoffs ship)' },
+    ],
+  },
+};
+
+const renderStaff = (host: HTMLElement, team: Team): void => {
+  const { head, firstBase, thirdBase } = team.coachingStaff;
+  const coaches: Coach[] = [head, thirdBase, firstBase];
+
+  const list = document.createElement('div');
+  list.className = 'staff-list';
+
+  for (const coach of coaches) {
+    const meta = COACH_ROLE_META[coach.role];
+    const card = document.createElement('div');
+    card.className = 'staff-card';
+
+    // Portrait.
+    const img = document.createElement('img');
+    img.src = coachPortraitDataUrl(coach, team, 64);
+    img.width = 64;
+    img.height = 64;
+    img.className = 'player-portrait-canvas';
+    img.alt = `${coach.firstName} ${coach.lastName}`;
+    card.appendChild(img);
+
+    // Bio + ratings.
+    const bio = document.createElement('div');
+    bio.className = 'staff-bio';
+    bio.innerHTML = `
+      <h3>${coach.firstName} ${coach.lastName}</h3>
+      <div class="staff-role">${meta.title}</div>
+    `;
+
+    const ratingList = document.createElement('div');
+    ratingList.className = 'attr-list';
+    for (const r of meta.ratings) {
+      const value = coach.ratings[r.key];
+      const grade = starRating(value);
+      const row = document.createElement('div');
+      row.className = 'attr-row';
+      row.innerHTML = `
+        <div class="attr-row-header">
+          <span class="attr-name">${r.label}</span>
+          <span class="attr-stars attr-${grade.bucket}">${starsToGlyphs(grade.stars)}</span>
+          <span class="attr-label">${grade.label} (${value})</span>
+        </div>
+        <div class="attr-desc">${r.desc}</div>
+      `;
+      ratingList.appendChild(row);
+    }
+    bio.appendChild(ratingList);
+    card.appendChild(bio);
+    list.appendChild(card);
+  }
+
+  host.appendChild(list);
 };
 
 const quirkLabel = (quirk: { kind: string }): string => {
