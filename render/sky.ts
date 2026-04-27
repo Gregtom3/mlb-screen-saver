@@ -2,6 +2,7 @@ import type { FieldTransform } from './transform.js';
 import { worldToScreen } from './transform.js';
 import type { WallPath } from './wall.js';
 import { TOP_HUD_HEIGHT } from './hud.js';
+import type { CrowdState } from '../ambience/state.js';
 
 // Background atmosphere. Replaces the flat black canvas fill that left a
 // "void" above the stadium bowl. Three stacked layers that all sit BEHIND
@@ -26,7 +27,6 @@ const SKYLINE_WINDOWS = '#d9b86a';
 
 const TOWER_POLE = '#3a3f47';
 const TOWER_LAMP = '#fff6c8';
-const TOWER_GLOW = 'rgba(255, 246, 200, 0.10)';
 const MOON_FILL = '#e8e6d8';
 const MOON_DARK = '#aaa89a';
 
@@ -36,13 +36,33 @@ interface SkyArgs {
   readonly wall: WallPath;
   readonly simTime: number;
   readonly skyTint?: string; // optional per-stadium horizon tint
+  // Live crowd-ambience signal. Tower halos brighten with energy, the
+  // horizon nudges toward the home team's primary color when mood swings
+  // home, and a one-shot bloom flashes across the towers on peak arousal.
+  readonly crowdState?: CrowdState;
+  // Home team's primary color. Used for the subtle horizon tint when the
+  // home crowd is rallying. Optional — falls back to no tint shift.
+  readonly homeTeamPrimary?: string;
 }
+
+// Lighten/darken an #rrggbb hex by a delta (-1..1). Mirrors render/field.ts:shiftHex.
+const blendHex = (a: string, b: string, t: number): string => {
+  const ax = parseInt(a.replace('#', '').slice(0, 2), 16);
+  const ay = parseInt(a.replace('#', '').slice(2, 4), 16);
+  const az = parseInt(a.replace('#', '').slice(4, 6), 16);
+  const bx = parseInt(b.replace('#', '').slice(0, 2), 16);
+  const by = parseInt(b.replace('#', '').slice(2, 4), 16);
+  const bz = parseInt(b.replace('#', '').slice(4, 6), 16);
+  const lerp = (x: number, y: number) => Math.round(x + (y - x) * t);
+  const toHex = (n: number) => n.toString(16).padStart(2, '0');
+  return `#${toHex(lerp(ax, bx))}${toHex(lerp(ay, by))}${toHex(lerp(az, bz))}`;
+};
 
 // Draw the night-sky gradient above the bowl. Bottom of the gradient lands
 // roughly where the deepest part of the wall sits, so the bowl can occlude
 // the warmer horizon band without any seam.
 const drawGradient = (args: SkyArgs): void => {
-  const { ctx, transform } = args;
+  const { ctx, transform, crowdState, homeTeamPrimary } = args;
   const { canvasWidth, canvasHeight } = transform;
   // Gradient runs from the very top of the canvas (above the HUD bug) down
   // to the horizon line — the latter approximated as the deepest wall point
@@ -51,10 +71,18 @@ const drawGradient = (args: SkyArgs): void => {
   // black if the bowl ever falls short.
   const horizonY = horizonScreenY(args);
   const grad = ctx.createLinearGradient(0, 0, 0, horizonY);
+  // Mood lift: when the home crowd is rallying (positive mood), nudge the
+  // horizon glow toward the home team's color. Capped at 6% blend so the
+  // night sky still reads as night.
+  let horizon = args.skyTint ?? SKY_GLOW;
+  if (crowdState && homeTeamPrimary && crowdState.mood > 0) {
+    const blend = Math.min(0.06, crowdState.mood * 0.08);
+    horizon = blendHex(horizon, homeTeamPrimary, blend);
+  }
   grad.addColorStop(0.0, SKY_TOP);
   grad.addColorStop(0.55, SKY_MID);
   grad.addColorStop(0.92, SKY_HORIZON);
-  grad.addColorStop(1.0, args.skyTint ?? SKY_GLOW);
+  grad.addColorStop(1.0, horizon);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 };
@@ -156,7 +184,16 @@ const drawLightTowers = (
   args: SkyArgs,
   towers: readonly LightTowerAnchor[],
 ): void => {
-  const { ctx, simTime } = args;
+  const { ctx, simTime, crowdState } = args;
+  // Energy lifts the baseline halo; arousal adds a brief bloom on top.
+  // Default alpha 0.10 → up to ~0.22 at peak roar. Use rgba directly so
+  // we can animate alpha without parsing TOWER_GLOW each call.
+  const baseAlpha = 0.10 + (crowdState?.energy ?? 0) * 0.08;
+  const flashAlpha = (crowdState?.arousal ?? 0) * 0.10;
+  const haloAlpha = Math.min(0.28, baseAlpha + flashAlpha);
+  const haloColor = `rgba(255, 246, 200, ${haloAlpha.toFixed(3)})`;
+  // A peak roar also fattens the halo radii.
+  const radiusBoost = 1 + (crowdState?.arousal ?? 0) * 0.5;
   for (let i = 0; i < towers.length; i++) {
     const t = towers[i]!;
     const top = { x: t.screen.x, y: t.screen.y - t.heightPx };
@@ -165,12 +202,12 @@ const drawLightTowers = (
     const phase = simTime * 0.04 + i * 0.7;
     const pulse = 0.75 + Math.sin(phase) * 0.15;
     ctx.save();
-    ctx.fillStyle = TOWER_GLOW;
+    ctx.fillStyle = haloColor;
     ctx.beginPath();
-    ctx.arc(top.x, top.y, 18 * pulse, 0, Math.PI * 2);
+    ctx.arc(top.x, top.y, 18 * pulse * radiusBoost, 0, Math.PI * 2);
     ctx.fill();
     ctx.beginPath();
-    ctx.arc(top.x, top.y, 12 * pulse, 0, Math.PI * 2);
+    ctx.arc(top.x, top.y, 12 * pulse * radiusBoost, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
     // Pole — narrow, slight taper toward the top.

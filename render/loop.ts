@@ -8,6 +8,7 @@ import { drawDebugOverlay, isDebugEnabled } from './debug.js';
 import { computeTransform } from './transform.js';
 import { computeAnimAudioCues } from './anim-cues.js';
 import type { PlayerId, TeamId } from '../world/types.js';
+import type { CrowdState } from '../ambience/state.js';
 
 // Default playback rate. With ~33-38k sim ticks per game, 20 ticks/wall sec
 // lands ~28-32 minutes per game, in line with the screensaver target.
@@ -75,6 +76,25 @@ export interface RenderLoopOptions {
    * loop just walks them with a parallel cursor and dispatches in order.
    */
   readonly onAnimCues?: (cues: readonly AnimAudioCue[]) => void;
+  /**
+   * Called every frame, even when there are no new events. Receives the
+   * elapsed wall-clock seconds and the (possibly empty) batch of events
+   * that just crossed the cursor. Used by /ambience to advance time-based
+   * state (energy/arousal decay, wave envelopes) regardless of event flow.
+   */
+  readonly onTick?: (dtSeconds: number, events: readonly SimEvent[]) => void;
+  /**
+   * Read-once-per-frame supply of the live crowd state. Drives the bowl
+   * density bump, flicker rate, front-row lean, and tower-glow brightness.
+   * Optional — absent = the renderer falls back to neutral defaults.
+   */
+  readonly getCrowdState?: () => CrowdState | null;
+  /**
+   * Read-once-per-frame supply of the active wave envelope. Drives
+   * `drawStadiumBowlFront`'s wave lift and (back) the upper deck. Returned
+   * `strength` is in [0, 1]; 0 disables the wave entirely.
+   */
+  readonly getWaveEnvelope?: () => { centerAngleDeg?: number; strength?: number };
 }
 
 export const createRenderLoop = (
@@ -134,35 +154,26 @@ export const createRenderLoop = (
     return lo;
   };
 
-  const dispatchDueEvents = () => {
-    if (!options.onEvents) {
-      // Still advance the index so a later subscription picks up from "now"
-      // rather than replaying the whole game.
-      while (eventIdx < game.events.length && game.events[eventIdx]!.t <= simTime) {
-        eventIdx++;
-      }
-    } else {
-      const batch: SimEvent[] = [];
-      while (eventIdx < game.events.length && game.events[eventIdx]!.t <= simTime) {
-        batch.push(game.events[eventIdx]!);
-        eventIdx++;
-      }
-      if (batch.length > 0) options.onEvents(batch);
+  // Returns the events that just crossed the cursor and advances the index
+  // even when no callback is registered (so a later subscription doesn't
+  // replay the whole game from t=0).
+  const collectDueEvents = (): SimEvent[] => {
+    const batch: SimEvent[] = [];
+    while (eventIdx < game.events.length && game.events[eventIdx]!.t <= simTime) {
+      batch.push(game.events[eventIdx]!);
+      eventIdx++;
     }
-    // Animation-cue stream — same fire-once-when-crossed semantics, parallel
-    // cursor. Skipped silently if no consumer is wired.
-    if (!options.onAnimCues) {
-      while (animCueIdx < animCues.length && animCues[animCueIdx]!.t <= simTime) {
-        animCueIdx++;
-      }
-      return;
-    }
-    const animBatch: AnimAudioCue[] = [];
+    return batch;
+  };
+  // Animation-cue parallel cursor — same fire-once-when-crossed semantics
+  // as SimEvents, but on a precomputed list derived from the event log.
+  const collectDueAnimCues = (): AnimAudioCue[] => {
+    const batch: AnimAudioCue[] = [];
     while (animCueIdx < animCues.length && animCues[animCueIdx]!.t <= simTime) {
-      animBatch.push(animCues[animCueIdx]!);
+      batch.push(animCues[animCueIdx]!);
       animCueIdx++;
     }
-    if (animBatch.length > 0) options.onAnimCues(animBatch);
+    return batch;
   };
 
   const teamBugInfo = (id: TeamId, score: number) => {
@@ -183,6 +194,8 @@ export const createRenderLoop = (
     // animation). Drawing order is unchanged: field is painted, then sprites,
     // then HUD on top.
     const scene = buildScene(game.events, simTime, game.sceneCtx);
+    const crowdState = options.getCrowdState?.() ?? null;
+    const wave = options.getWaveEnvelope?.() ?? null;
     drawField(ctx, transform, {
       grassShade: game.sceneCtx.grassShade,
       skyColor: game.sceneCtx.skyColor,
@@ -195,6 +208,11 @@ export const createRenderLoop = (
       ...(game.sceneCtx.awayTeamPrimary
         ? { awayTeamPrimary: game.sceneCtx.awayTeamPrimary }
         : {}),
+      ...(crowdState ? { crowdState } : {}),
+      ...(wave?.centerAngleDeg !== undefined
+        ? { waveCenterAngleDeg: wave.centerAngleDeg }
+        : {}),
+      ...(wave?.strength !== undefined ? { waveStrength: wave.strength } : {}),
     });
     lastScene = scene;
     lastTransform = transform;
@@ -228,7 +246,11 @@ export const createRenderLoop = (
     const dt = lastFrameMs === null ? 0 : (now - lastFrameMs) / 1000;
     lastFrameMs = now;
     simTime = Math.min(finalT(game), simTime + dt * ticksPerSecond);
-    dispatchDueEvents();
+    const dueEvents = collectDueEvents();
+    if (dueEvents.length > 0 && options.onEvents) options.onEvents(dueEvents);
+    if (options.onTick) options.onTick(dt, dueEvents);
+    const dueAnimCues = collectDueAnimCues();
+    if (dueAnimCues.length > 0 && options.onAnimCues) options.onAnimCues(dueAnimCues);
     draw();
     if (simTime >= finalT(game)) {
       // Don't stop the loop — user might switch to a still-playing game.

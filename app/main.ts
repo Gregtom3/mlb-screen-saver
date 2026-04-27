@@ -23,6 +23,13 @@ import {
   setMuted,
   isMuted,
 } from '../audio/index.js';
+import {
+  buildStarSet,
+  createAmbienceReducer,
+  createWaveTracker,
+  initialCrowdState,
+  type CrowdState,
+} from '../ambience/index.js';
 
 // Phase 3+ browser entry. Pre-simulates a few days of games for standings,
 // then puts day N+1 on screen as 8 simultaneous "channels". Phase 5.5 adds
@@ -464,21 +471,66 @@ const main = () => {
   // stays enabled; mute is toggled separately on the bus.
   const sfx = createSfxDispatcher();
 
+  // Ambience runtime: one reducer + wave tracker per channel, swapped when
+  // the user changes channels. The reducer ingests the same SimEvent stream
+  // the SFX dispatcher does, but produces the continuous CrowdState that
+  // both audio (bed, reactions, walk-up) and the renderer (bowl wave,
+  // density, lighting) read each frame.
+  const teamPlayersById = new Map<TeamId, Player[]>();
+  for (const p of league.players) {
+    if (p.teamId === null) continue;
+    const list = teamPlayersById.get(p.teamId) ?? [];
+    list.push(p);
+    teamPlayersById.set(p.teamId, list);
+  }
+  const buildAmbienceFor = (g: LiveGame) => {
+    const stars = buildStarSet({
+      homeTeamPlayers: teamPlayersById.get(g.entry.homeTeamId) ?? [],
+      awayTeamPlayers: teamPlayersById.get(g.entry.awayTeamId) ?? [],
+      aggregates: aggregatesWithLive,
+    });
+    return {
+      reducer: createAmbienceReducer({
+        homeTeamId: g.entry.homeTeamId,
+        awayTeamId: g.entry.awayTeamId,
+        stars,
+      }),
+      wave: createWaveTracker(),
+    };
+  };
+  let ambience = buildAmbienceFor(liveGames[selectedIdx]!);
+  let crowdState: CrowdState = initialCrowdState();
+
   const handle = createRenderLoop(canvas, liveGames[selectedIdx]!, {
     autoStart: true,
     getStandings: () => standings,
     getChannelInfo: () => ({ currentIdx: selectedIdx, total: liveGames.length }),
     onEvents: (events) => sfx.dispatch(events),
     onAnimCues: (cues) => sfx.dispatchAnim(cues),
+    onTick: (dt, events) => {
+      const frame = ambience.reducer.step(events, dt);
+      crowdState = frame.state;
+      ambience.wave.spawnFromPulses(frame.pulses);
+      ambience.wave.advance(dt);
+      sfx.applyAmbience?.({ state: frame.state, pulses: frame.pulses });
+    },
+    getCrowdState: () => crowdState,
+    getWaveEnvelope: () => ambience.wave.current(),
   });
 
   setupAudioToggle(sfx);
+
+  const onChannelChanged = () => {
+    ambience = buildAmbienceFor(liveGames[selectedIdx]!);
+    crowdState = initialCrowdState();
+  };
 
   const switchChannel = (delta: number) => {
     const next = (selectedIdx + delta + liveGames.length) % liveGames.length;
     if (next === selectedIdx) return;
     selectedIdx = next;
     handle.setActiveGame(liveGames[selectedIdx]!);
+    onChannelChanged();
     if (channelLabel) channelLabel.textContent = getChannelText();
   };
 
@@ -487,6 +539,7 @@ const main = () => {
     if (idx >= 0 && idx !== selectedIdx) {
       selectedIdx = idx;
       handle.setActiveGame(liveGames[selectedIdx]!);
+      onChannelChanged();
       if (channelLabel) channelLabel.textContent = getChannelText();
     }
   };
@@ -503,6 +556,7 @@ const main = () => {
       if (target < liveGames.length) {
         selectedIdx = target;
         handle.setActiveGame(liveGames[selectedIdx]!);
+        onChannelChanged();
         if (channelLabel) channelLabel.textContent = getChannelText();
       }
     }

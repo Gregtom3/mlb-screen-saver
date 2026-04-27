@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SimEvent } from '../sim/types.js';
+import type { CrowdState, ReactionPulse } from '../ambience/state.js';
+import { initialCrowdState } from '../ambience/state.js';
 
 // Mock /sfx so we can assert which SFX functions a given event triggers without
 // touching WebAudio (which has no jsdom backend).
@@ -16,6 +18,27 @@ vi.mock('./sfx.js', () => ({
   batSnap: vi.fn(),
 }));
 
+vi.mock('./reactions.js', () => ({
+  roar: vi.fn(),
+  cheer: vi.fn(),
+  oo: vi.fn(),
+  gasp: vi.fn(),
+  groan: vi.fn(),
+  rallyClap: vi.fn(),
+  twoStrikeClap: vi.fn(),
+  applauseTail: vi.fn(),
+}));
+
+vi.mock('./bed.js', () => ({
+  startBed: vi.fn(),
+  setBedFromState: vi.fn(),
+}));
+
+vi.mock('./walkup.js', () => ({
+  startWalkup: vi.fn(),
+  stopWalkup: vi.fn(),
+}));
+
 import {
   catcherMittPop,
   fielderGlovePop,
@@ -25,6 +48,9 @@ import {
   organStinger,
   strike3Call,
 } from './sfx.js';
+import { roar, cheer, oo, gasp, groan, rallyClap, twoStrikeClap, applauseTail } from './reactions.js';
+import { startBed, setBedFromState } from './bed.js';
+import { startWalkup, stopWalkup } from './walkup.js';
 import { createSfxDispatcher } from './dispatcher.js';
 
 type PitchResult = Extract<SimEvent, { kind: 'pitch' }>['pitch']['result'];
@@ -60,6 +86,18 @@ beforeEach(() => {
   vi.mocked(foulTick).mockClear();
   vi.mocked(organStinger).mockClear();
   vi.mocked(strike3Call).mockClear();
+  vi.mocked(roar).mockClear();
+  vi.mocked(cheer).mockClear();
+  vi.mocked(oo).mockClear();
+  vi.mocked(gasp).mockClear();
+  vi.mocked(groan).mockClear();
+  vi.mocked(rallyClap).mockClear();
+  vi.mocked(twoStrikeClap).mockClear();
+  vi.mocked(applauseTail).mockClear();
+  vi.mocked(startBed).mockClear();
+  vi.mocked(setBedFromState).mockClear();
+  vi.mocked(startWalkup).mockClear();
+  vi.mocked(stopWalkup).mockClear();
 });
 
 afterEach(() => {
@@ -148,5 +186,84 @@ describe('createSfxDispatcher', () => {
     d.setEnabled(false);
     d.dispatch([pitch('ball')]);
     expect(catcherMittPop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('SfxDispatcher.applyAmbience', () => {
+  const baseState = (): CrowdState => initialCrowdState();
+  const pulse = (
+    kind: ReactionPulse['kind'],
+    over: Partial<ReactionPulse> = {},
+  ): ReactionPulse => ({
+    kind,
+    intensity: 0.7,
+    durationMs: 1500,
+    side: 'home',
+    ...over,
+  });
+
+  it('routes each pulse kind to the correct synth', () => {
+    const d = createSfxDispatcher();
+    d.setEnabled(true);
+    d.applyAmbience!({
+      state: baseState(),
+      pulses: [
+        pulse('roar'),
+        pulse('cheer'),
+        pulse('oo'),
+        pulse('gasp'),
+        pulse('groan'),
+        pulse('rally-clap'),
+        pulse('two-strike-clap'),
+        pulse('applause-tail'),
+        pulse('walkup-start', { playerId: 'b1' }),
+      ],
+    });
+    expect(roar).toHaveBeenCalledTimes(1);
+    expect(cheer).toHaveBeenCalledTimes(1);
+    expect(oo).toHaveBeenCalledTimes(1);
+    expect(gasp).toHaveBeenCalledTimes(1);
+    expect(groan).toHaveBeenCalledTimes(1);
+    expect(rallyClap).toHaveBeenCalledTimes(1);
+    expect(twoStrikeClap).toHaveBeenCalledTimes(1);
+    expect(applauseTail).toHaveBeenCalledTimes(1);
+    expect(startWalkup).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips away-side pulses for crowd reactions but plays away walkup', () => {
+    const d = createSfxDispatcher();
+    d.setEnabled(true);
+    d.applyAmbience!({
+      state: baseState(),
+      pulses: [
+        pulse('cheer', { side: 'away' }),
+        pulse('walkup-start', { side: 'away', playerId: 'b1' }),
+      ],
+    });
+    expect(cheer).not.toHaveBeenCalled();
+    expect(startWalkup).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts the bed once and updates state every tick', () => {
+    const d = createSfxDispatcher();
+    d.setEnabled(true);
+    d.applyAmbience!({ state: baseState(), pulses: [] });
+    d.applyAmbience!({ state: baseState(), pulses: [] });
+    expect(startBed).toHaveBeenCalledTimes(1);
+    expect(setBedFromState).toHaveBeenCalledTimes(2);
+  });
+
+  it('a pitch dispatch stops any active walkup', () => {
+    const d = createSfxDispatcher();
+    d.setEnabled(true);
+    d.dispatch([pitch('called-strike')]);
+    expect(stopWalkup).toHaveBeenCalled();
+  });
+
+  it('does nothing when disabled', () => {
+    const d = createSfxDispatcher();
+    d.applyAmbience!({ state: baseState(), pulses: [pulse('roar')] });
+    expect(roar).not.toHaveBeenCalled();
+    expect(setBedFromState).not.toHaveBeenCalled();
   });
 });
