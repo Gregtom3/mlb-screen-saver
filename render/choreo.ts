@@ -107,7 +107,16 @@ const baseFor = (b: 0 | 1 | 2 | 3): FieldPoint => {
   return THIRD_BASE;
 };
 
-const isOutfieldHit = (landing: FieldPoint): boolean => landing.y > 130;
+// Decide whether the primary fielder should be an outfielder. For explicit
+// hits (single/double/triple), the ball got past the infield by definition,
+// so prefer outfield candidates — the lone exception is a legit infield
+// single whose ball stays in the dirt. For outs and other contact, use the
+// classic geometric cutoff.
+const isOutfieldHit = (landing: FieldPoint, outcome: AtBatOutcome): boolean => {
+  if (outcome === 'double' || outcome === 'triple') return true;
+  if (outcome === 'single') return landing.y > 100;
+  return landing.y > 130;
+};
 const isCaughtInAir = (outcome: AtBatOutcome): boolean =>
   outcome === 'flyout' ||
   outcome === 'lineout' ||
@@ -217,7 +226,7 @@ const buildOneChoreo = (
   const flightEndT = contactT + flightTicks;
 
   // Primary fielder — the one who fields the ball.
-  const candidates = isOutfieldHit(landing) ? OUTFIELD_PRIMARY : INFIELD_PRIMARY;
+  const candidates = isOutfieldHit(landing, outcome) ? OUTFIELD_PRIMARY : INFIELD_PRIMARY;
   const primary = pickClosestFielder(landing, ctx.fielderIdsByPos, candidates);
 
   const segments: BallSegment[] = [];

@@ -370,6 +370,7 @@ const main = (): void => {
         startingPitcherId: homeLineup.startingPitcher,
         bullpen: homeLineup.bullpen,
         defenseByPosition: homeLineup.defenseByPosition,
+        coachingStaff: homeTeam.coachingStaff,
       };
       const away: SideInput = {
         teamId: awayTeam.id,
@@ -377,6 +378,7 @@ const main = (): void => {
         startingPitcherId: awayLineup.startingPitcher,
         bullpen: awayLineup.bullpen,
         defenseByPosition: awayLineup.defenseByPosition,
+        coachingStaff: awayTeam.coachingStaff,
       };
 
       const input: GameInput = {

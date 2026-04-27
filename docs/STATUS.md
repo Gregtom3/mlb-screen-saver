@@ -3,7 +3,7 @@
 A current-state map so a fresh session doesn't have to re-survey the repo.
 Update this file whenever you finish a chunk. Keep it short.
 
-Last reviewed: 2026-04-27 (after batter-card upgrade — portrait + season AVG/HR/RBI + all-time vs-this-pitcher line).
+Last reviewed: 2026-04-27 (after coaching-staff sub-pass — head + 1B + 3B coaches per team; 3B coach gates send-on-single + tag-ups; head coach nudges infield shift).
 
 ## Phase status
 
@@ -22,8 +22,8 @@ Last reviewed: 2026-04-27 (after batter-card upgrade — portrait + season AVG/H
 
 | Path | What it owns | State |
 |------|--------------|-------|
-| `/sim` | Pure sim engine, event log, box score, stadium-effect plugins | Solid. Errors wired (glove rating → reached-on-error). Pitcher heat-map zone targeting + batter zone-pref outcome shifts wired. Fence-aware HR check active (rolled HR-shape trajectories that fall short of the wall downgrade to wall-ball doubles or wall-saving flyouts). Missing: WPs, pickoffs, SB, advanced baserunning, foul-line geography. |
-| `/world` | League snapshot, persistent state types | Players carry `heightFt`, per-pitcher zone tendencies, per-batter zone xBA prefs. `stadium-geometry.ts` shares wall-distance helpers between `/sim` (HR gate) and `/render` (wall draw). Static across seasons (no aging). |
+| `/sim` | Pure sim engine, event log, box score, stadium-effect plugins | Solid. Errors wired (glove rating → reached-on-error). Pitcher heat-map zone targeting + batter zone-pref outcome shifts wired. Fence-aware HR check active. Coaching-staff plugin wired (`coaching-effects.ts`): 3B coach gates send-on-single + tag-up success; head coach nudges infield-shift slices vs pull hitters. 1B coach (steals/pickoffs) defined but deferred — needs steal subsystem first. Missing: WPs, pickoffs, SB, advanced baserunning, foul-line geography. |
+| `/world` | League snapshot, persistent state types | Players carry `heightFt`, per-pitcher zone tendencies, per-batter zone xBA prefs. Teams now carry a 3-coach `CoachingStaff` (head / 1B / 3B). `stadium-geometry.ts` shares wall-distance helpers between `/sim` (HR gate) and `/render` (wall draw). Static across seasons (no aging). |
 | `/render` | Canvas renderer, scene reducer, sprites, HUD | Phase 2/3 complete + 8-bit strike-zone viewer in HUD + per-player sprite-size variance from listed height. Stadium visuals shipped: per-stadium wall arc (`wall.ts`), grass patterns (`grass-patterns.ts`), warning track / foul poles / dugouts / batter's boxes / on-deck circles (`stadium-chrome.ts`), crowd (`crowd.ts`), quirk decorations (`stadium-cosmetics.ts`), day/night palette swap. No weather. |
 | `/ui` | Five DOM menus (live/league/team/player/history), nav stack, sortable tables | Complete + pitcher heat map + batter xBA-by-zone in player view (sample-gated). No nudge controls. |
 | `/audio` | SFX dispatcher wired to SimEvents, audition page | ~5 SFX. No ambient crowd loop, no chiptune. |
@@ -37,7 +37,7 @@ Last reviewed: 2026-04-27 (after batter-card upgrade — portrait + season AVG/H
 
 ## Tech stack
 
-TypeScript 5.7 + Vite 6 + Canvas2D. Vitest 2.1 (88 tests). ESLint 9 flat config
+TypeScript 5.7 + Vite 6 + Canvas2D. Vitest 2.1 (97 tests). ESLint 9 flat config
 with `eslint-plugin-import-x` enforcing the `/sim` boundary. Prettier 3.4.
 **Zero runtime dependencies.** Bundle ~145 KB / ~47 KB gzipped.
 

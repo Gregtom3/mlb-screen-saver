@@ -1,4 +1,4 @@
-import type { Player, PlayerId, Position } from '../world/types.js';
+import type { Bats, Player, PlayerId, Position } from '../world/types.js';
 import type { PRNG } from './prng.js';
 import { createPRNG } from './prng.js';
 import type {
@@ -12,6 +12,10 @@ import type {
   SimEvent,
 } from './types.js';
 import { adjustmentsFor, type QuirkAdjustments } from './stadium-effects.js';
+import {
+  modsForCoaching,
+  type CoachingMods,
+} from './coaching-effects.js';
 import type { StadiumQuirk, StadiumDimensions } from '../world/types.js';
 import { wallDistanceAtAngle } from '../world/stadium-geometry.js';
 
@@ -292,8 +296,46 @@ const buildBallPath = (
   pitchCount: number,
   rng: PRNG,
 ): BallPath => {
-  const profile = PROFILES[outcome];
-  if (!profile) throw new Error(`buildBallPath called for non-contact outcome: ${outcome}`);
+  const baseProfile = PROFILES[outcome];
+  if (!baseProfile) throw new Error(`buildBallPath called for non-contact outcome: ${outcome}`);
+
+  // Singles and doubles get sub-typed at trajectory time so their on-screen
+  // shape matches real baseball. A flat single profile concentrates too many
+  // balls in the infield arc — every single ends up looking like a weak
+  // dribbler scooped by P/1B. Real singles are mostly line drives over the
+  // infield, with smaller shares of bloops, hard grounders through the hole,
+  // and legit infield singles. Doubles cluster in the gaps and down the line.
+  let profile = baseProfile;
+  let manualSpray: number | undefined;
+  if (outcome === 'single') {
+    const r = rng.next();
+    if (r < 0.10) {
+      // Legit infield single — weak grounder fielded by P/1B/SS.
+      profile = { evMin: 60, evMax: 80, angleMin: -10, angleMax: -2 };
+    } else if (r < 0.30) {
+      // Hard grounder through the 3-4 or 5-6 hole, into the outfield grass.
+      profile = { evMin: 90, evMax: 102, angleMin: -3, angleMax: 4 };
+      const sign = rng.next() < 0.5 ? -1 : 1;
+      manualSpray = sign * (15 + rng.next() * 12);
+    } else if (r < 0.85) {
+      // Line drive over the infielders — the bread-and-butter outfield single.
+      profile = { evMin: 88, evMax: 100, angleMin: 10, angleMax: 22 };
+    } else {
+      // Bloop / Texas leaguer — high arc, low velocity, drops in shallow OF.
+      profile = { evMin: 64, evMax: 80, angleMin: 26, angleMax: 42 };
+    }
+  } else if (outcome === 'double') {
+    // Trimodal: down the line, gap, and the occasional straight-away wall ball.
+    const sign = rng.next() < 0.5 ? -1 : 1;
+    const r = rng.next();
+    if (r < 0.35) {
+      manualSpray = sign * (26 + rng.next() * 16); // ±26..±42 — down the line
+    } else if (r < 0.80) {
+      manualSpray = sign * (12 + rng.next() * 14); // ±12..±26 — gap
+    } else {
+      manualSpray = sign * rng.next() * 14; // ±0..±14 — straight away
+    }
+  }
 
   // Player-rating modulation, layered on top of the profile band. Pitcher
   // suppression uses the fatigue-adjusted stamina, so a gassed starter gives
@@ -312,7 +354,9 @@ const buildBallPath = (
 
   const sprayBias = batter.bats === 'L' ? +6 : batter.bats === 'R' ? -6 : 0;
   let sprayDeg: number;
-  if (profile.sprayCenter !== undefined && profile.spraySpread !== undefined) {
+  if (manualSpray !== undefined) {
+    sprayDeg = manualSpray + sprayBias;
+  } else if (profile.sprayCenter !== undefined && profile.spraySpread !== undefined) {
     sprayDeg = profile.sprayCenter + (rng.next() - 0.5) * 2 * profile.spraySpread + sprayBias;
   } else {
     // Triangular distribution peaked at 0° — most contact goes up the middle,
@@ -365,17 +409,21 @@ interface InPlayResult {
 const sprayDegOf = (ballPath: BallPath): number =>
   (Math.atan2(ballPath.landingX, Math.max(1, ballPath.landingY)) * 180) / Math.PI;
 
-// Each coverage boundary shifts by the range-rating advantage of the left-side
-// fielder over the right-side fielder. A 50-point range gap (e.g. 75 vs 25)
-// moves the boundary ±2.5°. Nominal zones: 3B(<-22), SS(-22…-2), P(-2…+2),
-// 2B(+2…+22), 1B(>+22). Exported for unit tests; not part of the public API.
+// Each coverage boundary combines two independent adjustments:
+//   1. `shiftDeg` — head coach's tactical infield shift: >0 pushes all
+//      boundaries toward RF (vs LHB pull), <0 toward LF (vs RHB pull).
+//   2. `rangeOf` — per-fielder range rating shifts each boundary individually:
+//      a high-range SS steals ≤2.5° from P / 3B; a low-range one cedes it.
+// Nominal zones: 3B(<-22), SS(-22…-2), P(-2…+2), 2B(+2…+22), 1B(>+22).
+// Exported for unit tests; not part of the public API.
 const RANGE_SHIFT_SCALE = 0.05; // degrees per rating point from 50
 export const pickInfieldPosition = (
   spray: number,
+  shiftDeg: number,
   rangeOf: (pos: Position) => number = () => 50,
 ): Position => {
   const bnd = (left: Position, right: Position, nominal: number): number =>
-    nominal + (rangeOf(left) - rangeOf(right)) * RANGE_SHIFT_SCALE;
+    nominal + shiftDeg + (rangeOf(left) - rangeOf(right)) * RANGE_SHIFT_SCALE;
   if (spray < bnd('3B', 'SS', -22)) return '3B';
   if (spray < bnd('SS', 'P',   -2)) return 'SS';
   if (spray < bnd('P',  '2B',   2)) return 'P';
@@ -386,15 +434,25 @@ export const pickInfieldPosition = (
 // Tighter CF band than naive equal thirds because the triangular spray
 // distribution (peaked at 0deg) would otherwise hand center field >55% of
 // outfield chances. Real MLB CF gets ~38-40%; this lands in that range.
-const pickOutfieldPosition = (spray: number): Position => {
-  if (spray < -10) return 'LF';
-  if (spray < 10) return 'CF';
+const pickOutfieldPosition = (spray: number, shiftDeg: number): Position => {
+  if (spray < -10 + shiftDeg) return 'LF';
+  if (spray < 10 + shiftDeg) return 'CF';
   return 'RF';
+};
+
+// Direction-aware shift: head coach's `infieldShiftDeg` (always non-negative)
+// is signed by the batter's pull side. LHB pull right → +shift; RHB pull
+// left → -shift; switch hitters get no shift (no clear pull tendency).
+const shiftDegForBats = (bats: Bats, mods: CoachingMods): number => {
+  if (bats === 'L') return +mods.infieldShiftDeg;
+  if (bats === 'R') return -mods.infieldShiftDeg;
+  return 0;
 };
 
 const fielderPositionFor = (
   outcome: AtBatOutcome,
   ballPath: BallPath,
+  shiftDeg: number,
   rangeOf: (pos: Position) => number = () => 50,
 ): Position | null => {
   const spray = sprayDegOf(ballPath);
@@ -403,14 +461,14 @@ const fielderPositionFor = (
     case 'double-play':
     case 'fielders-choice':
     case 'popout':
-      return pickInfieldPosition(spray, rangeOf);
+      return pickInfieldPosition(spray, shiftDeg, rangeOf);
     case 'flyout':
     case 'sac-fly':
-      return pickOutfieldPosition(spray);
+      return pickOutfieldPosition(spray, shiftDeg);
     case 'lineout':
       return ballPath.launchAngleDeg < 14
-        ? pickInfieldPosition(spray, rangeOf)
-        : pickOutfieldPosition(spray);
+        ? pickInfieldPosition(spray, shiftDeg, rangeOf)
+        : pickOutfieldPosition(spray, shiftDeg);
     default:
       return null;
   }
@@ -615,6 +673,8 @@ const advanceForOutcome = (
   outcome: AtBatOutcome,
   batterId: PlayerId,
   bases: BasesState,
+  rng: PRNG,
+  mods: CoachingMods,
 ): AdvanceResult => {
   const runnerEvents: RunnerEvent[] = [];
   let runs = 0;
@@ -664,8 +724,24 @@ const advanceForOutcome = (
     }
     case 'single': {
       if (bases.third) score(bases.third, 3);
-      if (bases.second) score(bases.second, 2);
-      if (bases.first) advanceTo(bases.first, 1, 3);
+      // 3B coach decides whether the runner on 2B attempts to score on the
+      // single. Aggression-driven roll: a high-aggression coach sends in
+      // most cases (~96%); a low-aggression coach holds more (~74%). Held
+      // runners stop at 3B; that downstream effect cascades into the runner
+      // from 1B holding at 2B (no double-stack on 3rd).
+      let secondHeldAtThird = false;
+      if (bases.second) {
+        if (rng.next() < mods.sendOnSingleRate) {
+          score(bases.second, 2);
+        } else {
+          advanceTo(bases.second, 2, 3);
+          secondHeldAtThird = true;
+        }
+      }
+      if (bases.first) {
+        if (secondHeldAtThird) advanceTo(bases.first, 1, 2);
+        else advanceTo(bases.first, 1, 3);
+      }
       advanceTo(batterId, 0, 1);
       break;
     }
@@ -691,7 +767,19 @@ const advanceForOutcome = (
       break;
     }
     case 'sac-fly': {
-      if (bases.third) score(bases.third, 3);
+      // 3B coach's tag-up call. A high-judgment coach reads the catch and
+      // throw better and lands the runner safely (~99%); a poor judgment
+      // coach holds the runner more often (~85%). Failures here are
+      // modeled as "didn't tag" — the runner stays on third — rather than
+      // out-at-home, which would inflate outs above the +1 the sac-fly
+      // outcome encodes.
+      if (bases.third) {
+        if (rng.next() < mods.tagUpSuccessRate) {
+          score(bases.third, 3);
+        } else {
+          next.third = bases.third;
+        }
+      }
       if (bases.first) next.first = bases.first;
       if (bases.second) next.second = bases.second;
       // batter out (caught fly) — encoded by outcome, no baserunner event needed
@@ -897,6 +985,13 @@ const simulateAtBat = (
     }
   }
 
+  // Coaching mods. The fielding side's head coach drives the infield-shift
+  // nudge (against this batter's pull tendency); the batting side's 3B coach
+  // drives baserunning aggression on hits and tag-ups.
+  const fieldingMods = modsForCoaching(fielding.input.coachingStaff);
+  const battingMods = modsForCoaching(batting.input.coachingStaff);
+  const shiftDeg = shiftDegForBats(batter.bats, fieldingMods);
+
   // Fielder-error roll: would-be outs convert to reached-on-error based on
   // the responsible fielder's glove rating. P slot uses the active pitcher
   // (defenseByPosition.P is set at lineup time and goes stale on a sub).
@@ -908,7 +1003,7 @@ const simulateAtBat = (
       if (!id) return 50;
       return playerIndex.get(id)?.ratings.range ?? 50;
     };
-    const fieldPos = fielderPositionFor(outcome, inPlayResult.ballPath, infielderRangeOf);
+    const fieldPos = fielderPositionFor(outcome, inPlayResult.ballPath, shiftDeg, infielderRangeOf);
     if (fieldPos !== null) {
       const fielderId =
         fieldPos === 'P'
@@ -927,7 +1022,7 @@ const simulateAtBat = (
   }
 
   // Apply baserunning.
-  const advance = advanceForOutcome(outcome, batterId, state.bases);
+  const advance = advanceForOutcome(outcome, batterId, state.bases, rng, battingMods);
 
   // Emit baserunner events for each movement.
   for (const ev of advance.runnerEvents) {

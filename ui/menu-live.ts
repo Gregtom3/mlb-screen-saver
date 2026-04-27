@@ -36,7 +36,7 @@ export const renderLive = (
         <span class="lt-name">${home ? home.abbr : ''}</span>
         <span class="lt-score">${g.score.home}</span>
       </div>
-      <div class="lt-meta">${g.half === 'top' ? '▲' : '▼'} ${g.inning} · ${g.outs} out</div>
+      <div class="lt-meta">${g.half === 'top' ? '▲' : '▼'} ${g.inning} · ${g.outs} out <span class="lt-tod ${g.isDay ? 'lt-tod--day' : 'lt-tod--night'}">${g.isDay ? 'DAY' : 'NIGHT'}</span></div>
     `;
     const spark = document.createElement('canvas');
     spark.width = 160;

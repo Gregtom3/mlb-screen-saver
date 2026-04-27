@@ -31,6 +31,7 @@ export interface LiveGameSummary {
   readonly inning: number;
   readonly half: 'top' | 'bottom';
   readonly outs: number;
+  readonly isDay: boolean;
   readonly wpTimeline: GameWPTimeline | undefined;
 }
 

@@ -1,4 +1,6 @@
 import type { Team, Stadium, TeamId, StadiumId, Conference, Division } from '../world/types.js';
+import type { PRNG } from '../sim/prng.js';
+import { generateCoachingStaff } from './coach-init.js';
 
 // Static identity data for the founding 16. Phase 0 keeps this hand-curated;
 // later phases may seed-derive flavor variants but team identities stay fixed.
@@ -426,8 +428,12 @@ export const TEAM_SEEDS: readonly TeamSeed[] = [
   },
 ] as const;
 
-// Convert seeds into the canonical Team and Stadium shapes.
-export const buildTeamsAndStadiums = (): { teams: Team[]; stadiums: Stadium[] } => {
+// Convert seeds into the canonical Team and Stadium shapes. Coaching staffs
+// are generated per team from the supplied RNG (forked sub-stream per team
+// so adding a coach to one club doesn't ripple into another's roll).
+export const buildTeamsAndStadiums = (
+  rng: PRNG,
+): { teams: Team[]; stadiums: Stadium[] } => {
   const teams: Team[] = TEAM_SEEDS.map((seed) => ({
     id: seed.id,
     city: seed.city,
@@ -438,6 +444,7 @@ export const buildTeamsAndStadiums = (): { teams: Team[]; stadiums: Stadium[] } 
     colors: seed.colors,
     mascot: seed.mascot,
     stadiumId: seed.stadium.id,
+    coachingStaff: generateCoachingStaff(rng.fork(`coaches:${seed.id}`), seed.id),
   }));
 
   const stadiums: Stadium[] = TEAM_SEEDS.map((seed) => ({
