@@ -50,6 +50,18 @@
         color: #9aa0a6;
         pointer-events: auto;
       }
+      /* On phones the keyboard hints aren't useful — collapse to icons + the
+         menu button so the bar still fits at 360 CSS px. */
+      @media (max-width: 640px) {
+        #controls {
+          gap: 8px;
+          padding: 6px 8px;
+          font-size: 11px;
+        }
+        #controls .keyboard-hint {
+          display: none;
+        }
+      }
       #controls button,
       #controls select {
         background: #1a1f26;
@@ -758,11 +770,13 @@
         <button id="play-pause">▶ play</button>
         <span class="label">speed</span>
         <select id="speed"></select>
+        <button id="prev-channel" aria-label="Previous channel">◀</button>
         <span class="label" id="channel-label">ch —</span>
-        <span class="label">← / → cycle channels · 1–8 jump</span>
-        <span class="label">[Tab] stats menu</span>
-        <button id="audio-toggle" style="margin-left: auto">🔇 audio</button>
-        <span class="label">8-bit baseball</span>
+        <button id="next-channel" aria-label="Next channel">▶</button>
+        <span class="label keyboard-hint">← / → cycle channels · 1–8 jump</span>
+        <button id="open-menu" style="margin-left: auto">☰ menu</button>
+        <button id="audio-toggle">🔇 audio</button>
+        <span class="label keyboard-hint">8-bit baseball</span>
       </div>
     </div>
     <script type="module" src="/app/main.ts"></script>

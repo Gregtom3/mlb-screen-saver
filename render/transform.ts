@@ -32,9 +32,16 @@ export const computeTransform = (canvasWidth: number, canvasHeight: number): Fie
   const scaleByY = usableHeight / TARGET_OUTFIELD_FT;
   const scaleByX = usableWidth / (TARGET_FOUL_FT * 2);
   const pixelsPerFoot = Math.min(scaleByX, scaleByY);
+  // Anchor home plate so the field is vertically centered in the usable
+  // band when the X scale is the limiting factor (e.g. portrait phones).
+  // Otherwise the field hugs the bottom margin and leaves a yawning gap
+  // beneath the top HUD.
+  const fieldHeight = TARGET_OUTFIELD_FT * pixelsPerFoot;
+  const centerY = (fieldTop + fieldBottom) / 2;
+  const homePlateY = Math.min(fieldBottom, centerY + fieldHeight / 2);
   const homePlateScreen = {
     x: canvasWidth / 2,
-    y: fieldBottom,
+    y: homePlateY,
   };
   return { canvasWidth, canvasHeight, homePlateScreen, pixelsPerFoot };
 };

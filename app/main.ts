@@ -382,6 +382,11 @@ const main = () => {
 
   setupControls(handle, channelLabel, getChannelText);
 
+  const prevChannelBtn = document.getElementById('prev-channel') as HTMLButtonElement | null;
+  const nextChannelBtn = document.getElementById('next-channel') as HTMLButtonElement | null;
+  prevChannelBtn?.addEventListener('click', () => switchChannel(-1));
+  nextChannelBtn?.addEventListener('click', () => switchChannel(+1));
+
   // ---- Stats menu (phase 5.5).
   const playerIndex = new Map<PlayerId, Player>(league.players.map((p) => [p.id, p]));
   const stadiumIndex = new Map(league.stadiums.map((s) => [s.id, s]));
@@ -448,6 +453,9 @@ const main = () => {
     getHistory: () => history,
     getGameMetadata: (gameId) => gameMetadata.get(gameId),
   });
+
+  const openMenuBtn = document.getElementById('open-menu') as HTMLButtonElement | null;
+  openMenuBtn?.addEventListener('click', () => menu.toggle());
 
   globalThis.addEventListener('keydown', (ev) => {
     if (ev.key === 'Tab' || ev.key === 'm' || ev.key === 'M') {
