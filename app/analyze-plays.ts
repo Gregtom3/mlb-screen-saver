@@ -49,14 +49,16 @@ const hashString = (s: string): number => {
 
 // Mirror of /sim's internal fielder-assignment rule. Kept in lockstep with
 // sim/game.ts:pickInfieldPosition / pickOutfieldPosition / fielderPositionFor.
+// Uses nominal boundaries (range=50 for all) since player data isn't threaded
+// into this diagnostic script.
 const sprayDegOf = (bp: BallPath): number =>
   (Math.atan2(bp.landingX, Math.max(1, bp.landingY)) * 180) / Math.PI;
 
 const pickInfieldPosition = (spray: number): Position => {
-  if (spray < -20) return '3B';
-  if (spray < -3) return 'SS';
-  if (spray < 3) return 'P';
-  if (spray < 20) return '2B';
+  if (spray < -22) return '3B';
+  if (spray < -2) return 'SS';
+  if (spray < 2) return 'P';
+  if (spray < 22) return '2B';
   return '1B';
 };
 
