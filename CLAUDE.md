@@ -82,3 +82,46 @@ When working in this repo:
 - **No silent scope expansion.** If a task implies work beyond the current phase, surface it and stop.
 - **Update `/docs/STATUS.md`** when a chunk lands so the next session starts oriented.
 - **Git workflow: develop features on dedicated branches, merge to `main` only on the user's say-so.** Each feature/task gets its own branch (use the session-provided branch name when given one, otherwise propose a short descriptive name). Commit and push work to that branch as you go. Do **not** merge into `main` proactively — wait for the user to explicitly say the feature is done and to merge it (e.g. "merge it", "ship it", "land this on main"). When merging, fast-forward or `--no-ff` merge the feature branch into `main` locally, push `main`, and then it's fine to delete the feature branch. Never `--force` push to `main`, never skip hooks (`--no-verify`), and never commit secrets.
+
+---
+
+## Working Efficiently (token economy)
+
+The user vibe-codes: vague prompts ("the batter sprite jitters", "scoreboard
+looks off") are normal and expected. The burden of efficiency is on the
+agent, not the prompt. These rules matter as much as the architectural ones.
+
+### Orientation: read the map, not the code
+- Before touching code, read `/docs/STATUS.md` and `/docs/MAP.md`. They tell
+  you where things live. Do **not** run `find`/`ls`/`wc` to rediscover
+  layout — `MAP.md` already has it.
+- For phase context, read only the directly relevant `/docs/PHASE_*.md`.
+  Don't sweep through all of them.
+
+### Search, don't read
+- `render/` (~7.3k lines), `sim/` (~2.9k), `ui/` (~2.7k), `stats/` (~2.1k):
+  **never read whole files**. Grep for the symbol, read ±40 lines.
+- Files >500 lines (see MAP.md hotspot table) — same rule, even outside
+  those modules.
+- Modules MAP.md marks "read whole" are fine to read fully when relevant.
+
+### Delegate vague prompts to subagents
+- A vibe prompt where the target is unclear → spawn an Explore subagent
+  with a word-capped report (e.g. "under 200 words, return file:line of
+  the relevant code"). The subagent absorbs grep noise; main context only
+  sees a pointer.
+- Multi-file changes: plan in main context, delegate independent edits
+  to subagents when they don't share state.
+
+### Don't re-derive
+- Already read a file this session? Don't re-read unless it changed.
+- Already ran tests? Don't re-run unless code changed.
+- Already searched for X? Don't re-grep — quote from memory.
+
+### Output discipline
+- One sentence before a tool call. One-to-two-sentence end-of-turn summary.
+- No planning docs, no recap essays, no "let me also check…" tangents.
+- Finish the asked task. Stop.
+
+### When in doubt, ask
+A 5-token clarifying question beats a 5,000-token wrong direction.
