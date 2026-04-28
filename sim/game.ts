@@ -944,10 +944,22 @@ const simulateAtBat = (
   const fieldingMods = modsForCoaching(fielding.input.coachingStaff);
   const battingMods = modsForCoaching(batting.input.coachingStaff);
 
+  // Defensive geometry — also stable across the PA. Used both at contact
+  // time (to stamp `fielderId` on the contact event) and afterward for the
+  // error roll. The shift is signed by the batter's pull side; per-fielder
+  // range nudges each zone boundary individually.
+  const shiftDeg = shiftDegForBats(batter.bats, fieldingMods);
+  const infielderRangeOf = (pos: Position): number => {
+    const id = pos === 'P' ? pitcherId : fielding.input.defenseByPosition[pos];
+    if (!id) return 50;
+    return playerIndex.get(id)?.ratings.range ?? 50;
+  };
+
   let balls = 0;
   let strikes = 0;
   let outcome: AtBatOutcome | null = null;
   let inPlayResult: InPlayResult | null = null;
+  let responsibleFielderId: PlayerId | undefined;
   // Track which (runnerId, base) lead events we've already fired this PA so
   // a runner only "establishes a lead" once per arrival on a base.
   const leadsEmitted = state.leadsEmitted;
@@ -1055,48 +1067,44 @@ const simulateAtBat = (
           po.locationZone,
         );
         outcome = inPlayResult.outcome;
+        // Stamp the responsible fielder onto the contact event so the
+        // renderer animates the correct sprite. Without this, the renderer
+        // falls back to a Cartesian-closest heuristic that hands the
+        // pitcher (mound at y≈60ft) almost every grounder up the middle.
+        const fieldPos = fielderPositionFor(
+          outcome,
+          inPlayResult.ballPath,
+          shiftDeg,
+          infielderRangeOf,
+        );
+        responsibleFielderId =
+          fieldPos === null
+            ? undefined
+            : fieldPos === 'P'
+              ? pitcherId
+              : (fielding.input.defenseByPosition[fieldPos] ?? undefined);
         state.events.push({
           t: state.t,
           kind: 'contact',
           batterId,
           ballPath: inPlayResult.ballPath,
+          ...(responsibleFielderId !== undefined ? { fielderId: responsibleFielderId } : {}),
         });
         break;
       }
     }
   }
 
-  // Coaching mods (hoisted to top of simulateAtBat above so the baserunning
-  // resolver can read them between pitches). Shift direction is computed
-  // here because it depends on the batter's handedness.
-  const shiftDeg = shiftDegForBats(batter.bats, fieldingMods);
-
   // Fielder-error roll: would-be outs convert to reached-on-error based on
-  // the responsible fielder's glove rating. P slot uses the active pitcher
-  // (defenseByPosition.P is set at lineup time and goes stale on a sub).
-  if (inPlayResult) {
-    // Range lookup so zone boundaries are shifted by each fielder's range
-    // rating — a high-range SS steals coverage from the pitcher and 3B.
-    const infielderRangeOf = (pos: Position): number => {
-      const id = pos === 'P' ? pitcherId : fielding.input.defenseByPosition[pos];
-      if (!id) return 50;
-      return playerIndex.get(id)?.ratings.range ?? 50;
-    };
-    const fieldPos = fielderPositionFor(outcome, inPlayResult.ballPath, shiftDeg, infielderRangeOf);
-    if (fieldPos !== null) {
-      const fielderId =
-        fieldPos === 'P'
-          ? pitcherId
-          : fielding.input.defenseByPosition[fieldPos];
-      if (fielderId) {
-        const fielder = playerIndex.get(fielderId);
-        if (
-          fielder &&
-          rng.next() < errorProbForGlove(fielder.ratings.glove, inPlayResult.ballPath.exitVeloMph)
-        ) {
-          outcome = 'reached-on-error';
-        }
-      }
+  // the responsible fielder's glove rating. The responsible fielder was
+  // picked at contact time and stamped onto the contact event.
+  if (inPlayResult && responsibleFielderId !== undefined) {
+    const fielder = playerIndex.get(responsibleFielderId);
+    if (
+      fielder &&
+      rng.next() < errorProbForGlove(fielder.ratings.glove, inPlayResult.ballPath.exitVeloMph)
+    ) {
+      outcome = 'reached-on-error';
     }
   }
 

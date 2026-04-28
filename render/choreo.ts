@@ -127,6 +127,16 @@ const isCaughtInAir = (outcome: AtBatOutcome): boolean =>
   outcome === 'popout' ||
   outcome === 'sac-fly';
 
+const findPositionForPlayer = (
+  fielderIdsByPos: ReadonlyMap<FielderPos, PlayerId>,
+  playerId: PlayerId,
+): FielderPos | null => {
+  for (const [pos, id] of fielderIdsByPos) {
+    if (id === playerId) return pos;
+  }
+  return null;
+};
+
 const pickClosestFielder = (
   landing: FieldPoint,
   fielderIdsByPos: ReadonlyMap<FielderPos, PlayerId>,
@@ -230,8 +240,28 @@ const buildOneChoreo = (
   const flightEndT = contactT + flightTicks;
 
   // Primary fielder — the one who fields the ball.
-  const candidates = isOutfieldHit(landing, outcome) ? OUTFIELD_PRIMARY : INFIELD_PRIMARY;
-  const primary = pickClosestFielder(landing, ctx.fielderIdsByPos, candidates);
+  //
+  // The sim stamps `fielderId` onto the contact event for outs that involve
+  // fielding (groundouts / popouts / flyouts / lineouts / sac-flies / etc.)
+  // using its spray-band geometry. Honor that when present — it's the
+  // canonical answer. Falling back to a Cartesian-closest heuristic gives
+  // the pitcher (mound at y≈60ft) almost every grounder up the middle
+  // because the actual middle infielders sit deeper at y≈118ft.
+  //
+  // For hits (single / double / triple) the sim doesn't stamp a fielder —
+  // the closest-fielder geometry still picks the right outfielder, and the
+  // rare infield single naturally lands close to an infielder home.
+  const stamped = contactEvent.fielderId;
+  const stampedPos =
+    stamped !== undefined ? findPositionForPlayer(ctx.fielderIdsByPos, stamped) : null;
+  const primary =
+    stamped !== undefined && stampedPos !== null
+      ? { pos: stampedPos, playerId: stamped, homePos: FIELDER_HOME_POSITIONS[stampedPos] }
+      : pickClosestFielder(
+          landing,
+          ctx.fielderIdsByPos,
+          isOutfieldHit(landing, outcome) ? OUTFIELD_PRIMARY : INFIELD_PRIMARY,
+        );
 
   const segments: BallSegment[] = [];
   const fielderRoles: FielderRole[] = [];
@@ -425,11 +455,25 @@ export const buildAllPlayChoreos = (
 ): ReadonlyMap<number, PlayChoreo> => {
   const out = new Map<number, PlayChoreo>();
   let half: 'top' | 'bottom' = 'top';
+  // Mutable copies so a mid-game pitching change updates the 'P' slot —
+  // otherwise a relief pitcher's contact-event fielderId wouldn't resolve
+  // back to a position in the map.
+  const fielderIdsBySide = {
+    home: new Map(fielderIdsByPosBySide.home),
+    away: new Map(fielderIdsByPosBySide.away),
+  };
 
   for (let i = 0; i < events.length; i++) {
     const ev = events[i]!;
     if (ev.kind === 'inningEnd') {
       half = ev.halfInning === 'top' ? 'bottom' : 'top';
+      continue;
+    }
+    if (ev.kind === 'sub') {
+      // Phase 1 only emits subs for pitching changes. The fielding side is
+      // home in the top of the inning, away in the bottom.
+      const fieldingSide = half === 'top' ? 'home' : 'away';
+      fielderIdsBySide[fieldingSide].set('P', ev.inPlayerId);
       continue;
     }
     if (ev.kind !== 'contact') continue;
@@ -449,7 +493,7 @@ export const buildAllPlayChoreos = (
     if (!outcome) continue;
 
     const fieldingSide = half === 'top' ? 'home' : 'away';
-    const fielderIds = fielderIdsByPosBySide[fieldingSide];
+    const fielderIds = fielderIdsBySide[fieldingSide];
     out.set(ev.t, buildOneChoreo(ev, outcome, baserunners, { fielderIdsByPos: fielderIds }));
   }
   return out;
