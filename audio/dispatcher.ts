@@ -141,6 +141,35 @@ export const createSfxDispatcher = (): SfxDispatcher => {
             if (e.out) fielderGlovePop();
             break;
           }
+          case 'pickoffThrow': {
+            // Pitcher's throw to the bag — soft mitt pop on accurate
+            // throws so the catcher mitt SFX doesn't dominate. Errant
+            // throws skip this and fire on the deflection arrival.
+            if (e.accurate) catcherMittPop();
+            break;
+          }
+          case 'errantThrow': {
+            // The "oh no" beat — a high foul-style tick at the deflection
+            // moment. The follow-up backupPlay glove pop reads as the
+            // "oh wait" recovery a beat later.
+            foulTick();
+            break;
+          }
+          case 'backupPlay': {
+            // Backup OF retrieves and fires — lighter glove pop on
+            // pickup, the actual tag arrival fires off tagAttempt below.
+            fielderGlovePop();
+            break;
+          }
+          case 'tagAttempt': {
+            // Tag swipe at the bag — runner safe or out, the pop reads
+            // either way; the half-inning state tells the eye.
+            fielderGlovePop();
+            break;
+          }
+          // gameStart / sub / inningEnd / lead / pickoffAttempt /
+          // stealAttempt: silent here — the renderer's animations carry
+          // the visual beat and the surrounding events fire the SFX.
           case 'atBatEnd': {
             if (e.outcome === 'strikeout-swinging' || e.outcome === 'strikeout-looking') {
               strike3Call();

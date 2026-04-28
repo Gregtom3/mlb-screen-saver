@@ -80,6 +80,44 @@ interface RunnerLatest {
   readonly perBaseTicks: number;
 }
 
+// Runner's current lead state (Phase baserunning). The reducer stamps this
+// from `lead` events; the runner-render path lerps the at-rest runner a
+// few feet toward the next base, plus a deterministic sway from simTime
+// for the "building a lead" idle animation.
+interface RunnerLead {
+  readonly leadFt: number;
+  readonly aggression: number;
+  readonly base: 1 | 2 | 3;
+}
+
+// Lerp the runner's resting position toward the next base by leadFt and
+// add a small sinusoidal sway. A unit-vector step from base→next-base
+// gives the lead direction; the sway swings perpendicular to that vector.
+const applyLead = (
+  basePos: FieldPoint,
+  lead: RunnerLead,
+  runnerId: PlayerId,
+  simTime: number,
+): FieldPoint => {
+  const nextBase: 0 | 1 | 2 | 3 = ((lead.base + 1) % 4) as 0 | 1 | 2 | 3;
+  const nextPos = baseFor(nextBase);
+  const dx = nextPos.x - basePos.x;
+  const dy = nextPos.y - basePos.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const ux = dx / dist;
+  const uy = dy / dist;
+  // Lead distance along the base→next vector.
+  const offsetFt = lead.leadFt;
+  // Sway: amplitude scales with aggression; phase per-runner so the line
+  // doesn't sway in unison. Period ~3 sim seconds for a believable rock.
+  const phase = idHash01(runnerId) * Math.PI * 2;
+  const sway = Math.sin((simTime / 3) * Math.PI * 2 + phase) * lead.aggression * 1.2;
+  return {
+    x: basePos.x + ux * offsetFt + -uy * sway,
+    y: basePos.y + uy * offsetFt + ux * sway,
+  };
+};
+
 // How long an out runner lingers — walking off toward the dugout — after
 // they reach the base where they were retired. Long enough to read clearly,
 // short enough to clear before the next pitch.
@@ -222,6 +260,7 @@ const computeRunnerRender = (
   simTime: number,
   runnerId: PlayerId,
   battingDugout: FieldPoint,
+  lead: RunnerLead | undefined,
 ): RunnerRender => {
   const path = basePath(latest.from, latest.to);
   const segmentLen = latest.perBaseTicks;
@@ -261,6 +300,12 @@ const computeRunnerRender = (
 
   // Safe — stays at base. Scoring runners leave the field.
   if (latest.to === 0) return { runnerId, position: HOME_PLATE, stillVisible: false };
+  // Apply lead offset + idle sway when the runner is settled at a runnable
+  // base (1/2/3) and we have a fresh `lead` event for them. Skip if no
+  // lead is known — falls back to standing on the bag.
+  if (lead && (latest.to === 1 || latest.to === 2 || latest.to === 3)) {
+    return { runnerId, position: applyLead(arrivedAt, lead, runnerId, simTime), stillVisible: true };
+  }
   return { runnerId, position: arrivedAt, stillVisible: true };
 };
 
@@ -482,6 +527,9 @@ export const buildScene = (
   };
   // Last baserunner motion event per runner (for interpolation).
   const runnerLatest = new Map<PlayerId, RunnerLatest>();
+  // Most recent `lead` event per runner — drives idle sway + lead offset
+  // on at-rest baserunner sprites.
+  const runnerLead = new Map<PlayerId, RunnerLead>();
 
   let lastPitch: PitchInProgress | null = null;
   let lastContact: ContactInProgress | null = null;
@@ -587,7 +635,18 @@ export const buildScene = (
         lastContactT = ev.t;
         break;
       }
+      case 'lead': {
+        runnerLead.set(ev.runnerId, {
+          leadFt: ev.leadFt,
+          aggression: ev.aggression,
+          base: ev.base,
+        });
+        break;
+      }
       case 'baserunner': {
+        // A new arrival/advance overwrites any stale lead — the next
+        // `lead` event for the runner re-establishes the correct base.
+        runnerLead.delete(ev.runnerId);
         // Use choreo override start-time + per-base pace if available —
         // handles sac-fly tag-ups and pace-matches force-out runners to the
         // throw arrival so the "out" reads correctly.
@@ -944,7 +1003,13 @@ export const buildScene = (
   // Note: the batter-as-runner appears here once a baserunner event fires for them.
   if (inningTransition === null && gameEnd === null) {
     for (const [runnerId, latest] of runnerLatest) {
-      const render = computeRunnerRender(latest, simTime, runnerId, battingDugout);
+      const render = computeRunnerRender(
+        latest,
+        simTime,
+        runnerId,
+        battingDugout,
+        runnerLead.get(runnerId),
+      );
       if (!render.stillVisible) continue;
       runners.push({
         id: runnerId,

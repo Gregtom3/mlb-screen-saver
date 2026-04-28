@@ -105,6 +105,10 @@ export interface BoxScore {
   readonly leftOnBase: { readonly home: number; readonly away: number };
 }
 
+// Bases a runner can occupy as a lead/pickoff target. Always 1, 2, or 3 —
+// home (0) is never a "lead"-able base.
+export type RunnerBase = 1 | 2 | 3;
+
 // Discriminated union of every event the sim emits. The renderer, audio,
 // UI, and box-score builders all consume this stream — and only this stream.
 export type SimEvent =
@@ -146,7 +150,77 @@ export type SimEvent =
       readonly reason: SubReason;
     }
   | { readonly t: number; readonly kind: 'inningEnd'; readonly halfInning: 'top' | 'bottom'; readonly inning: number; readonly runs: number }
-  | { readonly t: number; readonly kind: 'gameEnd'; readonly gameId: GameId; readonly finalRuns: { home: number; away: number } };
+  | { readonly t: number; readonly kind: 'gameEnd'; readonly gameId: GameId; readonly finalRuns: { home: number; away: number } }
+  // Runner takes their lead at a base. Emitted once per arrival — the
+  // renderer reads `leadFt` for sprite offset and `aggression` (0..1) for
+  // sway amplitude on the idle "building a lead" animation.
+  | {
+      readonly t: number;
+      readonly kind: 'lead';
+      readonly runnerId: PlayerId;
+      readonly base: RunnerBase;
+      readonly leadFt: number;
+      readonly aggression: number;
+    }
+  // Pitcher steps off and starts a pickoff move. Emitted before the throw
+  // so the renderer can play the step-off animation independently.
+  | {
+      readonly t: number;
+      readonly kind: 'pickoffAttempt';
+      readonly pitcherId: PlayerId;
+      readonly runnerId: PlayerId;
+      readonly targetBase: RunnerBase;
+    }
+  // Pitcher releases the pickoff throw. `accurate=false` is followed by an
+  // `errantThrow` event with the deflection coordinates.
+  | {
+      readonly t: number;
+      readonly kind: 'pickoffThrow';
+      readonly pitcherId: PlayerId;
+      readonly targetBase: RunnerBase;
+      readonly accurate: boolean;
+    }
+  // The pickoff throw sailed past the bag. `backupFielderId` is the OF
+  // who's positioned to back up the play (always set in normal defense).
+  // `landingX/Y` are field-coordinate feet from home plate where the
+  // ball came to rest — renderer animates a deflected arc to that spot.
+  | {
+      readonly t: number;
+      readonly kind: 'errantThrow';
+      readonly pitcherId: PlayerId;
+      readonly targetBase: RunnerBase;
+      readonly backupFielderId: PlayerId;
+      readonly landingX: number;
+      readonly landingY: number;
+    }
+  // Backup OF retrieves the errant throw and fires to the advancing base.
+  // Emitted only after an `errantThrow` — the runner is mid-advance.
+  | {
+      readonly t: number;
+      readonly kind: 'backupPlay';
+      readonly fielderId: PlayerId;
+      readonly runnerId: PlayerId;
+      readonly throwToBase: RunnerBase;
+    }
+  // Runner breaks for the next base on a steal. The actual base movement
+  // is still emitted via a follow-up `baserunner` event (out or safe).
+  | {
+      readonly t: number;
+      readonly kind: 'stealAttempt';
+      readonly runnerId: PlayerId;
+      readonly from: RunnerBase;
+      readonly to: 2 | 3;
+    }
+  // Tag attempt at a base — separate from the `baserunner` event so the
+  // renderer can fire a "tag swipe" animation distinct from a clean
+  // arrival. Steals, pickoffs, and backup plays all emit this.
+  | {
+      readonly t: number;
+      readonly kind: 'tagAttempt';
+      readonly runnerId: PlayerId;
+      readonly base: RunnerBase;
+      readonly out: boolean;
+    };
 
 export type SimEventKind = SimEvent['kind'];
 
