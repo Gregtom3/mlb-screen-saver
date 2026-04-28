@@ -16,6 +16,7 @@ import {
   modsForCoaching,
   type CoachingMods,
 } from './coaching-effects.js';
+import { resolveBetweenPitches } from './baserunning.js';
 import type { StadiumQuirk, StadiumDimensions } from '../world/types.js';
 import { wallDistanceAtAngle } from '../world/stadium-geometry.js';
 
@@ -60,6 +61,10 @@ interface GameState {
   home: SideState;
   away: SideState;
   events: SimEvent[];
+  // (runnerId, base) pairs that already had a `lead` event emitted at
+  // their current arrival. Reset at every half-inning since the bases
+  // are cleared between innings.
+  leadsEmitted: Set<string>;
 }
 
 const TIME_PITCH = 25; // arbitrary "ticks" between pitches
@@ -880,10 +885,12 @@ const swapPitcherIfNeeded = (state: GameState, side: Side): void => {
 // ---- at-bat ------------------------------------------------------------
 
 interface AtBatResult {
-  readonly outcome: AtBatOutcome;
+  readonly outcome: AtBatOutcome | null; // null = at-bat aborted by 3rd-out steal/pickoff
   readonly runsScored: number;
   readonly outsAdded: number;
   readonly newBases: BasesState;
+  /** True when batter completed a PA — caller advances the batting order. */
+  readonly batterFaced: boolean;
 }
 
 let pitchSeq = 0;
@@ -907,12 +914,72 @@ const simulateAtBat = (
   const batter = requirePlayer(playerIndex, batterId);
   const pitcher = requirePlayer(playerIndex, pitcherId);
 
+  // Build the active fielder map once for the at-bat — used by the
+  // baserunning resolver to look up OF backup positions on errant
+  // pickoffs. Pitcher slot reflects the active arm even after a sub.
+  const activeFielders = new Map<Position, Player>();
+  for (const [pos, id] of Object.entries(fielding.input.defenseByPosition)) {
+    if (!id) continue;
+    const p = playerIndex.get(id);
+    if (p) activeFielders.set(pos as Position, p);
+  }
+  activeFielders.set('P', pitcher);
+  const catcherForSteal = activeFielders.get('C');
+
+  // Mods scoped to this at-bat. Coaching modifiers don't change mid-PA.
+  const fieldingMods = modsForCoaching(fielding.input.coachingStaff);
+  const battingMods = modsForCoaching(batting.input.coachingStaff);
+
   let balls = 0;
   let strikes = 0;
   let outcome: AtBatOutcome | null = null;
   let inPlayResult: InPlayResult | null = null;
+  // Track which (runnerId, base) lead events we've already fired this PA so
+  // a runner only "establishes a lead" once per arrival on a base.
+  const leadsEmitted = state.leadsEmitted;
+  let abortedRunsScored = 0;
 
   while (outcome === null) {
+    // Between-pitch baserunning: lead emission, pickoff, errant throw +
+    // OF backup tag, and steal attempts. May add outs and runs and may
+    // end the half-inning before the pitch fires.
+    const br = resolveBetweenPitches(
+      {
+        bases: state.bases,
+        pitcher,
+        catcher: catcherForSteal,
+        fielders: activeFielders,
+        fieldingMods,
+        battingMods,
+        outs: state.outs,
+        t: state.t,
+        leadsEmitted,
+      },
+      rng,
+      (id) => playerIndex.get(id),
+    );
+    for (const ev of br.events) state.events.push(ev);
+    state.bases = br.bases;
+    state.outs += br.outsAdded;
+    state.t = br.t;
+    if (br.runsScored > 0) {
+      if (battingSide_ === 'home') state.runs.home += br.runsScored;
+      else state.runs.away += br.runsScored;
+      abortedRunsScored += br.runsScored;
+    }
+    if (br.endsHalfInning) {
+      // 3rd out came on a steal or pickoff — abort the at-bat without
+      // emitting an atBatEnd. Caller keeps the batting index so the same
+      // batter leads off the next half-inning.
+      return {
+        outcome: null,
+        runsScored: abortedRunsScored,
+        outsAdded: br.outsAdded,
+        newBases: state.bases,
+        batterFaced: false,
+      };
+    }
+
     const ptype = pitchTypeFor(pitcher, rng);
     // Snapshot the pitch count for this pitch so simulatePitch and any
     // downstream simulateInPlay see the same fatigue value.
@@ -985,11 +1052,9 @@ const simulateAtBat = (
     }
   }
 
-  // Coaching mods. The fielding side's head coach drives the infield-shift
-  // nudge (against this batter's pull tendency); the batting side's 3B coach
-  // drives baserunning aggression on hits and tag-ups.
-  const fieldingMods = modsForCoaching(fielding.input.coachingStaff);
-  const battingMods = modsForCoaching(batting.input.coachingStaff);
+  // Coaching mods (hoisted to top of simulateAtBat above so the baserunning
+  // resolver can read them between pitches). Shift direction is computed
+  // here because it depends on the batter's handedness.
   const shiftDeg = shiftDegForBats(batter.bats, fieldingMods);
 
   // Fielder-error roll: would-be outs convert to reached-on-error based on
@@ -1070,11 +1135,23 @@ const simulateAtBat = (
 
   batting.batterIdx += 1;
 
+  // Clear lead bookkeeping for any base that ended empty so the next
+  // arriving runner re-establishes a fresh lead. We rebuild the keys
+  // for occupied bases, then drop everything else.
+  const stillOnBase = new Set<string>();
+  if (state.bases.first) stillOnBase.add(`${state.bases.first}@1`);
+  if (state.bases.second) stillOnBase.add(`${state.bases.second}@2`);
+  if (state.bases.third) stillOnBase.add(`${state.bases.third}@3`);
+  for (const key of Array.from(state.leadsEmitted)) {
+    if (!stillOnBase.has(key)) state.leadsEmitted.delete(key);
+  }
+
   return {
     outcome,
-    runsScored: advance.runsScored,
+    runsScored: advance.runsScored + abortedRunsScored,
     outsAdded: advance.outsAdded,
     newBases: advance.newBases,
+    batterFaced: true,
   };
 };
 
@@ -1089,10 +1166,15 @@ const playHalfInning = (
 ): void => {
   state.outs = 0;
   state.bases = { first: null, second: null, third: null };
+  state.leadsEmitted.clear();
   while (state.outs < 3) {
     const result = simulateAtBat(state, rng, playerIndex, stadiumQuirk, stadiumDimensions);
-    state.outs += result.outsAdded;
-    state.bases = result.newBases;
+    // Aborted at-bats already updated state.outs and state.bases via the
+    // baserunning resolver; the return value's outsAdded matches the delta.
+    if (result.batterFaced) {
+      state.outs += result.outsAdded;
+      state.bases = result.newBases;
+    }
     if (state.outs >= 3) break;
   }
   state.t += TIME_INNING_GAP;
@@ -1120,6 +1202,7 @@ export const runGame = (input: GameInput): readonly SimEvent[] => {
     home: newSideState(input.home),
     away: newSideState(input.away),
     events: [],
+    leadsEmitted: new Set<string>(),
   };
 
   state.events.push({
