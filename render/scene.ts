@@ -778,19 +778,27 @@ export const buildScene = (
             battingSide: half === 'top' ? 'away' : 'home',
           };
         }
-        // Around-the-horn flag: strikeout + no one on base + 50% chance.
-        // The sequence runs catcher → 3B → SS → 2B → P, so we record the
-        // third-strike pitch time (when the ball lands in the mitt) and
-        // the active fielder lineup so the per-frame ball-position logic
-        // below can play the choreo back deterministically.
+        // Around-the-horn flag: strikeout + no one on base + not the 3rd
+        // out + 85% chance. Skipping the 3rd-out case avoids a conflict
+        // with the inning walk-off animation; otherwise we fire often so
+        // the sequence reads as the standard post-K ritual it is.
+        // Sequence runs catcher → 3B → SS → 2B → P; we record the third-
+        // strike pitch time (ball in the mitt) and the active fielder
+        // lineup so the per-frame ball-position logic below can play the
+        // choreo back deterministically.
+        // `outs` was already incremented above to include this K's out, so
+        // outs >= 3 means this strikeout was the 3rd out — fielders walk
+        // off, no horn.
+        const inningEndedHere = outs >= 3;
         if (
           (ev.outcome === 'strikeout-swinging' ||
             ev.outcome === 'strikeout-looking') &&
           bases.first === null &&
           bases.second === null &&
           bases.third === null &&
+          !inningEndedHere &&
           lastThirdStrikePitchT !== null &&
-          hash01(`horn|${ev.t}`) < 0.5
+          hash01(`horn|${ev.t}`) < 0.85
         ) {
           const fielderIds = (half === 'top' ? homeFielderIds : awayFielderIds);
           lastStrikeoutAroundTheHorn = {

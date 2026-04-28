@@ -495,15 +495,26 @@ export const createAmbienceReducer = (
           mirror.strikes = 0;
           mirror.twoStrikeArmed = false;
 
-          // If runs scored this half, applause tail sized to the burst.
+          // If runs scored this half, applause tail sized to the burst —
+          // but ONLY when the home team scored. The home crowd doesn't
+          // applaud visitors crossing the plate; if anything they sigh.
           if (ev.runs > 0) {
             const battingHomeThisHalf = ev.halfInning === 'bottom';
-            pulses.push({
-              kind: 'applause-tail',
-              intensity: clamp01(0.45 + ev.runs * 0.12),
-              durationMs: clamp01(0.45 + ev.runs * 0.12) * 5500 + 1500,
-              side: battingHomeThisHalf ? 'home' : 'home', // home crowd applauds either way (politely for visitors)
-            });
+            if (battingHomeThisHalf) {
+              pulses.push({
+                kind: 'applause-tail',
+                intensity: clamp01(0.45 + ev.runs * 0.12),
+                durationMs: clamp01(0.45 + ev.runs * 0.12) * 5500 + 1500,
+                side: 'home',
+              });
+            } else {
+              pulses.push({
+                kind: 'groan',
+                intensity: clamp01(0.35 + ev.runs * 0.08),
+                durationMs: 1500 + ev.runs * 250,
+                side: 'home',
+              });
+            }
           }
 
           // Flip half / inning.

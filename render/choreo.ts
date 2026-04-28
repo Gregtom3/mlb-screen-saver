@@ -29,7 +29,11 @@ export type FielderPos = 'P' | 'C' | '1B' | '2B' | '3B' | 'SS' | 'LF' | 'CF' | '
 const ALL_FIELDER_POSITIONS: readonly FielderPos[] = [
   'P', 'C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF',
 ];
-const INFIELD_PRIMARY: readonly FielderPos[] = ['1B', '2B', '3B', 'SS', 'P'];
+// Catcher is included so dribblers and tappers in front of the plate get
+// fielded by C — the pitcher otherwise wins the closest-fielder lookup
+// for anything landing within ~30 ft of home, since none of the corner
+// infielders are positioned that shallow.
+const INFIELD_PRIMARY: readonly FielderPos[] = ['1B', '2B', '3B', 'SS', 'P', 'C'];
 const OUTFIELD_PRIMARY: readonly FielderPos[] = ['LF', 'CF', 'RF'];
 
 // =========== Pacing constants (sim ticks ≈ seconds) =====================

@@ -310,7 +310,7 @@ describe('pickInfieldPosition range-adjusted boundaries', () => {
     (pos: Position): number => (pos === target ? 10 : 50);
 
   it('default (all range=50, no shift) uses nominal boundaries', () => {
-    // Nominal: 3B(<-22), SS(-22…-2), P(-2…+2), 2B(+2…+22), 1B(>+22)
+    // Nominal: 3B(<-18), SS(-18…-1), P(-1…+1), 2B(+1…+18), 1B(>+18)
     expect(pickInfieldPosition(-30, 0, avg)).toBe('3B');
     expect(pickInfieldPosition(-10, 0, avg)).toBe('SS');
     expect(pickInfieldPosition(0,   0, avg)).toBe('P');
@@ -319,39 +319,39 @@ describe('pickInfieldPosition range-adjusted boundaries', () => {
   });
 
   it('high-range SS steals territory from pitcher on left boundary', () => {
-    // High-range SS shifts SS/P boundary right by 2° (-2+2=0).
-    // Ball at spray=-1 is now inside SS zone (was P with avg range).
-    expect(pickInfieldPosition(-1, 0, avg)).toBe('P');
-    expect(pickInfieldPosition(-1, 0, high('SS'))).toBe('SS');
+    // High-range SS shifts SS/P boundary right by 2° (-1+2=+1).
+    // Ball at spray=0 is normally P; with a high-range SS it becomes SS.
+    expect(pickInfieldPosition(0, 0, avg)).toBe('P');
+    expect(pickInfieldPosition(0, 0, high('SS'))).toBe('SS');
   });
 
   it('low-range SS cedes territory to pitcher on left boundary', () => {
-    // Low-range SS shifts SS/P boundary left by 2° (-2-2=-4).
-    // Ball at spray=-3 falls into P zone (was SS with avg range).
-    expect(pickInfieldPosition(-3, 0, avg)).toBe('SS');
-    expect(pickInfieldPosition(-3, 0, low('SS'))).toBe('P');
+    // Low-range SS shifts SS/P boundary left by 2° (-1-2=-3).
+    // Ball at spray=-2 falls into P zone (was SS with avg range).
+    expect(pickInfieldPosition(-2, 0, avg)).toBe('SS');
+    expect(pickInfieldPosition(-2, 0, low('SS'))).toBe('P');
   });
 
   it('high-range 2B steals territory from pitcher on right boundary', () => {
-    // High-range 2B shifts P/2B boundary left by 2° (2-2=0).
-    // Ball at spray=+1 is now inside 2B zone (was P with avg range).
-    expect(pickInfieldPosition(1, 0, avg)).toBe('P');
-    expect(pickInfieldPosition(1, 0, high('2B'))).toBe('2B');
+    // High-range 2B shifts P/2B boundary left by 2° (1-2=-1).
+    // Ball at spray=0 is now inside 2B zone (was P with avg range).
+    expect(pickInfieldPosition(0, 0, avg)).toBe('P');
+    expect(pickInfieldPosition(0, 0, high('2B'))).toBe('2B');
   });
 
   it('high-range 1B steals territory from 2B on right boundary', () => {
-    // High-range 1B shifts 2B/1B boundary left by 2° (22-2=20).
-    // Ball at spray=+21 is now inside 1B zone (was 2B with avg range).
-    expect(pickInfieldPosition(21, 0, avg)).toBe('2B');
-    expect(pickInfieldPosition(21, 0, high('1B'))).toBe('1B');
+    // High-range 1B shifts 2B/1B boundary left by 2° (18-2=16).
+    // Ball at spray=+17 is now inside 1B zone (was 2B with avg range).
+    expect(pickInfieldPosition(17, 0, avg)).toBe('2B');
+    expect(pickInfieldPosition(17, 0, high('1B'))).toBe('1B');
   });
 
   it('shiftDeg translates all boundaries uniformly', () => {
-    // +3° shift: SS/P boundary moves from -2 to +1. A ball at spray=0
+    // +3° shift: SS/P boundary moves from -1 to +2. A ball at spray=0
     // (normally P) now lands in SS zone.
     expect(pickInfieldPosition(0, 0,  avg)).toBe('P');
     expect(pickInfieldPosition(0, 3,  avg)).toBe('SS');
-    // -3° shift: P/2B boundary moves from +2 to -1. Ball at spray=0 → 2B.
+    // -3° shift: P/2B boundary moves from +1 to -2. Ball at spray=0 → 2B.
     expect(pickInfieldPosition(0, -3, avg)).toBe('2B');
   });
 });
