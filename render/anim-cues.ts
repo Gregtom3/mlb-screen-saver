@@ -205,12 +205,15 @@ export const computeAnimAudioCues = (
         const empty = !bases.first && !bases.second && !bases.third;
         const outsAdded = outsAddedFor(ev.outcome);
         outsThisHalf += outsAdded;
-        // Around-the-horn: K + empty bases + 50% chance.
+        // Around-the-horn: K + empty bases + not the 3rd out + 85% chance.
+        // Skip the 3rd-out case so the horn doesn't fight the inning
+        // walk-off animation. Must mirror the same gate in scene.ts.
         if (
           isStrikeout &&
           empty &&
+          outsThisHalf < 3 &&
           lastThirdStrikePitchT !== null &&
-          hash01(`horn|${ev.t}`) < 0.5
+          hash01(`horn|${ev.t}`) < 0.85
         ) {
           cues.push(...buildHornCues(lastThirdStrikePitchT));
         }

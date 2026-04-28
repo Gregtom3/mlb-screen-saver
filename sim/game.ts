@@ -414,7 +414,10 @@ const sprayDegOf = (ballPath: BallPath): number =>
 //      boundaries toward RF (vs LHB pull), <0 toward LF (vs RHB pull).
 //   2. `rangeOf` — per-fielder range rating shifts each boundary individually:
 //      a high-range SS steals ≤2.5° from P / 3B; a low-range one cedes it.
-// Nominal zones: 3B(<-22), SS(-22…-2), P(-2…+2), 2B(+2…+22), 1B(>+22).
+// Nominal zones: 3B(<-18), SS(-18…-1), P(-1…+1), 2B(+1…+18), 1B(>+18).
+// The pitcher slot is intentionally narrow — a real pitcher only fields
+// balls hit straight back at the mound. Anything pulled even slightly
+// goes to SS or 2B, who have far better closing range from their depth.
 // Exported for unit tests; not part of the public API.
 const RANGE_SHIFT_SCALE = 0.05; // degrees per rating point from 50
 export const pickInfieldPosition = (
@@ -424,10 +427,10 @@ export const pickInfieldPosition = (
 ): Position => {
   const bnd = (left: Position, right: Position, nominal: number): number =>
     nominal + shiftDeg + (rangeOf(left) - rangeOf(right)) * RANGE_SHIFT_SCALE;
-  if (spray < bnd('3B', 'SS', -22)) return '3B';
-  if (spray < bnd('SS', 'P',   -2)) return 'SS';
-  if (spray < bnd('P',  '2B',   2)) return 'P';
-  if (spray < bnd('2B', '1B',  22)) return '2B';
+  if (spray < bnd('3B', 'SS', -18)) return '3B';
+  if (spray < bnd('SS', 'P',   -1)) return 'SS';
+  if (spray < bnd('P',  '2B',   1)) return 'P';
+  if (spray < bnd('2B', '1B',  18)) return '2B';
   return '1B';
 };
 
@@ -449,6 +452,12 @@ const shiftDegForBats = (bats: Bats, mods: CoachingMods): number => {
   return 0;
 };
 
+// Balls landing within this radius of home plate (very weak dribblers,
+// foul-line tappers, popups in front of the plate) are catcher's
+// responsibility — the pitcher would have to charge a long way to beat
+// the catcher to the ball. Using landingY as the proxy because the
+// catcher sits ~8 ft behind the plate while the mound is 60.5 ft out.
+const CATCHER_FIELDING_RADIUS_FT = 22;
 const fielderPositionFor = (
   outcome: AtBatOutcome,
   ballPath: BallPath,
@@ -456,11 +465,16 @@ const fielderPositionFor = (
   rangeOf: (pos: Position) => number = () => 50,
 ): Position | null => {
   const spray = sprayDegOf(ballPath);
+  // Distance from home plate to the landing spot. Anything within the
+  // catcher's range gets fielded by C — short of forcing the pitcher to
+  // sprint off the mound for a five-foot dribbler.
+  const landingDistFt = Math.hypot(ballPath.landingX, ballPath.landingY);
   switch (outcome) {
     case 'groundout':
     case 'double-play':
     case 'fielders-choice':
     case 'popout':
+      if (landingDistFt < CATCHER_FIELDING_RADIUS_FT) return 'C';
       return pickInfieldPosition(spray, shiftDeg, rangeOf);
     case 'flyout':
     case 'sac-fly':
