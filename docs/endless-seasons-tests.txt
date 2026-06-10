@@ -1,0 +1,31 @@
+ ✓ stats/aggregator.test.ts (17 tests) 577ms
+ ✓ sim/baserunning.test.ts (10 tests) 410ms
+ ✓ sim/ratings.test.ts (4 tests) 1376ms
+   ✓ speed rating > fast batters out-hit slow batters across a 30-game batch 453ms
+   ✓ glove rating > iron-glove fielders concede more reached-on-error than elite-glove fielders 369ms
+ ✓ audio/dispatcher.test.ts (12 tests) 7ms
+ ✓ render/scene.test.ts (11 tests) 140ms
+ ✓ ambience/reducer.test.ts (9 tests) 6ms
+ ✓ render/grounder-fielder.test.ts (2 tests) 142ms
+ ✓ season/history.test.ts (6 tests) 411ms
+ ✓ sim/game.test.ts (19 tests) 2433ms
+   ✓ runGame sanity > 100-game batch produces plausible average runs per game 504ms
+   ✓ fence-aware home runs > a short park produces noticeably more HRs than a deep park (same seeds, same teams) 449ms
+   ✓ fence-aware home runs > a deep park converts some would-be HRs into doubles and flyouts (wall-ball downgrades) 426ms
+   ✓ fence-aware home runs > neutral-park HR/G stays in the same band as the legacy (no-dimensions) path 450ms
+ ✓ sim/baserunning-table.test.ts (10 tests) 25ms
+ ✓ stats/incremental.test.ts (1 test) 167ms
+ ✓ sim/coaching-integration.test.ts (3 tests) 431ms
+   ✓ coaching mods threaded through runGame > aggressive 3B coaches produce more runs over a batch than cautious ones 373ms
+ ✓ sim/coaching-effects.test.ts (6 tests) 4ms
+ ✓ projections/montecarlo.test.ts (3 tests) 234ms
+ ✓ stats/splits.test.ts (5 tests) 412ms
+ ✓ stats/grades.test.ts (5 tests) 62ms
+ ✓ sim/stadium-effects.test.ts (5 tests) 4ms
+ ✓ season/schedule.test.ts (4 tests) 64ms
+ ✓ sim/prng.test.ts (5 tests) 31ms
+ ✓ content/player-init.test.ts (4 tests) 397ms
+   ✓ player generation > every rating is in [1, 99] 348ms
+ Test Files  20 passed (20)
+      Tests  141 passed (141)
+   Duration  4.75s (transform 583ms, setup 0ms, collect 1.52s, tests 7.33s, environment 3ms, prepare 1.06s)
