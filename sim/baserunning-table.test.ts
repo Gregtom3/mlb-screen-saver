@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { advanceForOutcome } from './game.js';
 import { NEUTRAL_COACHING_MODS } from './coaching-effects.js';
 import { createPRNG } from './prng.js';
-import type { BasesState } from './types.js';
+import type { BasesState } from './baserunning.js';
 
 const B = 'batter' as const;
 const R1 = 'runner1' as const;

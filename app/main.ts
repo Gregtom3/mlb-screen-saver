@@ -14,7 +14,13 @@ import {
   type SceneContext,
 } from '../render/index.js';
 import { mountMenu, type GameMetadata, type LiveGameSummary } from '../ui/index.js';
-import { buildSeasonAggregates, type FinishedGame, type SeasonAggregates } from '../stats/index.js';
+import {
+  aggregateGame,
+  buildSeasonAggregates,
+  type AggregatorContext,
+  type FinishedGame,
+  type SeasonAggregates,
+} from '../stats/index.js';
 import { buildProjections } from '../projections/index.js';
 import type { ProjectionSet } from '../projections/types.js';
 import {
@@ -57,6 +63,41 @@ const SPEED_PRESETS = [
 function parseSeed(s: string): number {
   return s.startsWith('0x') ? parseInt(s, 16) : parseInt(s, 10);
 }
+
+// ---- Saved progress. Determinism is the storage engine: persisting just
+// (seed, seasonIdx, day) lets a reload re-simulate the exact same league back
+// to where the viewer left off — completed seasons and all. Keyed by seed so
+// different leagues keep independent saves.
+interface SavedProgress {
+  readonly v: 1;
+  readonly seasonIdx: number;
+  readonly day: number;
+}
+
+const SAVE_KEY = `8bb:progress:${SEED.toString(16)}`;
+
+const loadProgress = (): SavedProgress | null => {
+  try {
+    const raw = globalThis.localStorage?.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SavedProgress>;
+    if (parsed.v !== 1) return null;
+    if (typeof parsed.seasonIdx !== 'number' || typeof parsed.day !== 'number') return null;
+    if (parsed.seasonIdx < 0 || parsed.day < 1) return null;
+    return { v: 1, seasonIdx: parsed.seasonIdx, day: parsed.day };
+  } catch {
+    return null;
+  }
+};
+
+const saveProgress = (p: SavedProgress): void => {
+  try {
+    globalThis.localStorage?.setItem(SAVE_KEY, JSON.stringify(p));
+  } catch {
+    // Storage unavailable (private mode, quota) — the league still runs,
+    // it just starts fresh next load.
+  }
+};
 
 const fnv = (s: string): number => {
   let h = 0x811c9dc5;
@@ -319,6 +360,19 @@ const main = () => {
   const priorSummaries: { year: number; agg: SeasonAggregates; teamGames: number }[] = [];
   const gameMetadata = new Map<string, GameMetadata>();
   const PRIOR_SEASON_GOLDEN_RATIO = 0x9e_37_79_b9;
+
+  // ---- Endless-day season state. An explicit ?day= in the URL wins;
+  // otherwise resume from the saved (seasonIdx, day) position. Same-season
+  // days share one seed; later seasons re-seed so outcomes differ
+  // year-over-year (offset clear of the prior-season seed family).
+  const seasonSeedFor = (idx: number): number =>
+    idx === 0 ? SEED : (SEED ^ Math.imul(PRIOR_SEASON_GOLDEN_RATIO, 7000 + idx)) >>> 0;
+  const saved = QS.get('day') ? null : loadProgress();
+  let seasonIdx = saved?.seasonIdx ?? 0;
+  let seasonYear = league.season.year + seasonIdx;
+  let activeSchedule = seasonIdx === 0 ? schedule : buildSchedule(league.teams, seasonYear);
+  let currentDay = Math.max(1, Math.min(saved?.day ?? LIVE_DAY, activeSchedule.totalDays));
+
   for (let i = 0; i < PRIOR_SEASONS; i++) {
     const priorYear = league.season.year - PRIOR_SEASONS + i;
     const priorSeed = SEED ^ Math.imul(PRIOR_SEASON_GOLDEN_RATIO, i + 1);
@@ -337,12 +391,33 @@ const main = () => {
     priorSummaries.push({ year: priorYear, agg, teamGames: totalDays });
   }
 
+  // ---- Deterministically replay seasons completed in previous sessions so
+  // the History view resumes where the viewer left off. Same schedules, same
+  // seeds, same outcomes as when they originally played out on screen.
+  for (let i = 0; i < seasonIdx; i++) {
+    const y = league.season.year + i;
+    const sched = i === 0 ? schedule : buildSchedule(league.teams, y);
+    const seedI = seasonSeedFor(i);
+    const games: FinishedGame[] = [];
+    for (let day = 1; day <= sched.totalDays; day++) {
+      for (const entry of sched.entries.filter((e) => e.day === day)) {
+        const { input } = buildGameInput(league, entry, seedI);
+        games.push({ events: runGame(input), input, day });
+      }
+    }
+    priorSummaries.push({
+      year: y,
+      agg: buildSeasonAggregates(games, league.teams, league.players, y),
+      teamGames: sched.totalDays,
+    });
+  }
+
   // ---- Pre-simulate current-season history days. Stash events for /stats so
   // the menu has full season context (PA/PA splits, hit charts, WP timelines).
   const historyGames: FinishedGame[] = [];
-  for (let day = 1; day < LIVE_DAY; day++) {
-    for (const entry of schedule.entries.filter((e) => e.day === day)) {
-      const { input } = buildGameInput(league, entry, SEED);
+  for (let day = 1; day < currentDay; day++) {
+    for (const entry of activeSchedule.entries.filter((e) => e.day === day)) {
+      const { input } = buildGameInput(league, entry, seasonSeedFor(seasonIdx));
       const events = runGame(input);
       historyGames.push({ events, input, day });
       gameMetadata.set(entry.gameId, {
@@ -359,7 +434,7 @@ const main = () => {
     historyGames,
     league.teams,
     league.players,
-    league.season.year,
+    seasonYear,
   );
   // Convert TeamLine → TeamStanding for the existing HUD strip.
   const standings = new Map<TeamId, TeamStanding>();
@@ -368,18 +443,10 @@ const main = () => {
     standings.set(team.id, line ? { wins: line.W, losses: line.L } : { wins: 0, losses: 0 });
   }
 
-  // ---- Pre-simulate live-day games and keep their event logs. The Live
-  // view in the stats menu reads partial state out of these.
-  const liveDayEntries = schedule.entries.filter((e) => e.day === LIVE_DAY);
-  if (liveDayEntries.length === 0) {
-    console.error(`No games on day ${LIVE_DAY}`);
-    return;
-  }
-  // Two-phase build: simulate every live game first (we need their finished
-  // events to roll into aggregatesWithLive + careerBvp), then build per-game
-  // SceneContexts once those aggregates exist. The render loop's batter card
-  // reads season AVG/HR/RBI and BvP off SceneContext, so the context
-  // wouldn't be useful built earlier.
+  // ---- Endless-day machinery. The league runs forever: when every game on
+  // the live day finishes, the next day is simulated and put on the air; when
+  // the schedule runs out, the finished season is banked into history and a
+  // fresh one begins. All of this is driven from the render loop's onTick.
   interface LiveGameSeed {
     readonly entry: { gameId: string; homeTeamId: TeamId; awayTeamId: TeamId };
     readonly input: GameInput;
@@ -388,45 +455,70 @@ const main = () => {
     readonly stadium: Stadium;
     readonly events: readonly SimEvent[];
   }
-  const liveGameSeeds: LiveGameSeed[] = liveDayEntries.map((entry) => {
-    const { input, home, away, stadium } = buildGameInput(league, entry, SEED);
-    const events = runGame(input);
-    gameMetadata.set(entry.gameId, {
-      gameId: entry.gameId,
-      day: entry.day,
-      homeTeamId: entry.homeTeamId,
-      awayTeamId: entry.awayTeamId,
-      homeStartingPitcher: input.home.startingPitcherId,
-      awayStartingPitcher: input.away.startingPitcherId,
-    });
-    return {
-      entry: {
-        gameId: entry.gameId,
-        homeTeamId: entry.homeTeamId,
-        awayTeamId: entry.awayTeamId,
-      },
-      input,
-      home,
-      away,
-      stadium,
-      events,
-    };
-  });
+
+  // Simulate one day's slate and register its metadata for the menus.
+  const simulateDaySeeds = (day: number): LiveGameSeed[] =>
+    activeSchedule.entries
+      .filter((e) => e.day === day)
+      .map((entry) => {
+        const { input, home, away, stadium } = buildGameInput(
+          league,
+          entry,
+          seasonSeedFor(seasonIdx),
+        );
+        const events = runGame(input);
+        gameMetadata.set(entry.gameId, {
+          gameId: entry.gameId,
+          day: entry.day,
+          homeTeamId: entry.homeTeamId,
+          awayTeamId: entry.awayTeamId,
+          homeStartingPitcher: input.home.startingPitcherId,
+          awayStartingPitcher: input.away.startingPitcherId,
+        });
+        return {
+          entry: {
+            gameId: entry.gameId,
+            homeTeamId: entry.homeTeamId,
+            awayTeamId: entry.awayTeamId,
+          },
+          input,
+          home,
+          away,
+          stadium,
+          events,
+        };
+      });
+
+  // Two-phase build: simulate every live game first (we need their finished
+  // events to roll into aggregatesWithLive + careerBvp), then build per-game
+  // SceneContexts once those aggregates exist. The render loop's batter card
+  // reads season AVG/HR/RBI and BvP off SceneContext, so the context
+  // wouldn't be useful built earlier.
+  let liveGameSeeds: LiveGameSeed[] = simulateDaySeeds(currentDay);
+  if (liveGameSeeds.length === 0) {
+    console.error(`No games on day ${currentDay}`);
+    return;
+  }
 
   // Aggregate live-day finals too so the menu's leaderboards reflect them.
-  // Live tiles use the timelines for sparklines.
-  const liveFinishedGames: FinishedGame[] = liveGameSeeds.map((g) => ({
-    events: g.events as readonly SimEvent[],
-    input: g.input,
-    day: LIVE_DAY,
-  }));
-  // Re-build aggregates including live finals (cheap; <1ms for 8 games).
-  const aggregatesWithLive = buildSeasonAggregates(
-    [...historyGames, ...liveFinishedGames],
+  // Live tiles use the timelines for sparklines. Later days fold into this
+  // same object incrementally (aggregateGame mutates in place).
+  const aggCtx: AggregatorContext = {
+    teamsById: new Map(league.teams.map((t) => [t.id, t])),
+    playerIndex: new Map(league.players.map((p) => [p.id, p])),
+  };
+  let aggregatesWithLive = buildSeasonAggregates(
+    [
+      ...historyGames,
+      ...liveGameSeeds.map((g) => ({ events: g.events, input: g.input, day: currentDay })),
+    ],
     league.teams,
     league.players,
-    league.season.year,
+    seasonYear,
   );
+  // The aggregates carry everything the menus need — free the raw history
+  // event logs so a long-running session's memory stays flat.
+  historyGames.length = 0;
 
   // Build LeagueHistory now (was below) so each live game's SceneContext
   // can carry the careerBvp map for the HUD batter card. The retired-set
@@ -434,8 +526,7 @@ const main = () => {
   // it's populated.
   const playerIndex = new Map<PlayerId, Player>(league.players.map((p) => [p.id, p]));
   const stadiumIndex = new Map(league.stadiums.map((s) => [s.id, s]));
-  const teamGamesPlayed = LIVE_DAY;
-  const history: LeagueHistory = buildLeagueHistory({
+  let history: LeagueHistory = buildLeagueHistory({
     seasons: priorSummaries,
     teams: league.teams,
     playerIndex,
@@ -457,23 +548,25 @@ const main = () => {
   // exist, mint a SceneContext per game wired to both. The HUD batter card
   // pulls season AVG/HR/RBI from `aggregatesWithLive` and "vs PITCHER"
   // matchup totals from a combination of that map plus history.careerBvp.
-  const liveGames: LiveGame[] = liveGameSeeds.map((seed) => {
-    const stars = buildStarSet({
-      homeTeamPlayers: teamPlayersById.get(seed.home.id) ?? [],
-      awayTeamPlayers: teamPlayersById.get(seed.away.id) ?? [],
-      aggregates: aggregatesWithLive,
+  const mintLiveGames = (seeds: readonly LiveGameSeed[]): LiveGame[] =>
+    seeds.map((seed) => {
+      const stars = buildStarSet({
+        homeTeamPlayers: teamPlayersById.get(seed.home.id) ?? [],
+        awayTeamPlayers: teamPlayersById.get(seed.away.id) ?? [],
+        aggregates: aggregatesWithLive,
+      });
+      const sceneCtx = buildSceneCtxFor(league, seed.input, seed.home, seed.away, seed.stadium, {
+        seasonAggregates: aggregatesWithLive,
+        careerBvp: history.careerBvp,
+        isStarBatter: (id) => stars.has(id),
+      });
+      return {
+        events: seed.events,
+        sceneCtx,
+        entry: seed.entry,
+      } satisfies LiveGame;
     });
-    const sceneCtx = buildSceneCtxFor(league, seed.input, seed.home, seed.away, seed.stadium, {
-      seasonAggregates: aggregatesWithLive,
-      careerBvp: history.careerBvp,
-      isStarBatter: (id) => stars.has(id),
-    });
-    return {
-      events: seed.events,
-      sceneCtx,
-      entry: seed.entry,
-    } satisfies LiveGame;
-  });
+  let liveGames: LiveGame[] = mintLiveGames(liveGameSeeds);
 
   let selectedIdx = Math.max(0, Math.min(liveGames.length - 1, INITIAL_GAME));
 
@@ -482,7 +575,8 @@ const main = () => {
     const g = liveGames[selectedIdx]!;
     const home = league.teams.find((t) => t.id === g.entry.homeTeamId);
     const away = league.teams.find((t) => t.id === g.entry.awayTeamId);
-    return `ch ${selectedIdx + 1}/${liveGames.length}  ·  ${away?.abbr} @ ${home?.abbr}`;
+    const yearTag = seasonIdx > 0 ? `  ·  year ${seasonYear}` : '';
+    return `ch ${selectedIdx + 1}/${liveGames.length}  ·  ${away?.abbr} @ ${home?.abbr}  ·  day ${currentDay}${yearTag}`;
   };
 
   // Audio dispatcher: stays inert until the user clicks the audio toggle (a
@@ -525,6 +619,7 @@ const main = () => {
       ambience.wave.spawnFromPulses(frame.pulses);
       ambience.wave.advance(dt);
       sfx.applyAmbience?.({ state: frame.state, pulses: frame.pulses });
+      directorTick();
     },
     getCrowdState: () => crowdState,
     getWaveEnvelope: () => ambience.wave.current(),
@@ -537,22 +632,130 @@ const main = () => {
     crowdState = initialCrowdState();
   };
 
+  const refreshChannelLabel = () => {
+    if (channelLabel) channelLabel.textContent = getChannelText();
+  };
+
+  // ---- Auto-director + endless days. When the channel we're watching goes
+  // final, hop to the most interesting game still in progress; when the whole
+  // slate is final, advance to the next day (and the next season after that).
+  // A manual channel change holds the director off for a while so the user
+  // can linger on a final scoreboard if they want to.
+  let lastManualSwitchAt = -Infinity;
+  const MANUAL_HOLD_MS = 30_000;
+
+  const gameEndT = (g: LiveGame): number => {
+    const last = g.events[g.events.length - 1];
+    return last ? last.t + 60 : 0;
+  };
+
+  // Interest = late and close. Uses only state at the current tick, so the
+  // director never peeks ahead at outcomes the viewer hasn't seen.
+  const pickMostInteresting = (candidates: readonly number[], tick: number): number => {
+    let best = candidates[0]!;
+    let bestScore = -Infinity;
+    for (const i of candidates) {
+      const g = liveGames[i]!;
+      const { inning, scoreHome, scoreAway } = extractLiveState(g.events, tick);
+      const s = inning * 1.5 - Math.abs(scoreHome - scoreAway) * 2;
+      if (s > bestScore) {
+        bestScore = s;
+        best = i;
+      }
+    }
+    return best;
+  };
+
+  const refreshStandings = () => {
+    for (const team of league.teams) {
+      const line = aggregatesWithLive.teams.get(team.id);
+      standings.set(team.id, line ? { wins: line.W, losses: line.L } : { wins: 0, losses: 0 });
+    }
+  };
+
+  // Bank the finished season into the History view and start a fresh one.
+  // Rosters carry over unchanged (aging/retirement is future work) but the
+  // schedule, seed, aggregates, and standings all reset for the new year.
+  const rolloverSeason = () => {
+    priorSummaries.push({
+      year: seasonYear,
+      agg: aggregatesWithLive,
+      teamGames: activeSchedule.totalDays,
+    });
+    history = buildLeagueHistory({
+      seasons: priorSummaries,
+      teams: league.teams,
+      playerIndex,
+      retiredPlayers: new Set(),
+    });
+    seasonIdx += 1;
+    seasonYear += 1;
+    activeSchedule = buildSchedule(league.teams, seasonYear);
+    aggregatesWithLive = buildSeasonAggregates([], league.teams, league.players, seasonYear);
+    for (const team of league.teams) standings.set(team.id, { wins: 0, losses: 0 });
+    currentDay = 0; // advanceDay bumps to 1
+  };
+
+  const advanceDay = () => {
+    // Standings count the day that just ended (the agg already includes it),
+    // but never the new day's pre-simulated finals — no spoilers on the strip.
+    refreshStandings();
+    if (currentDay >= activeSchedule.totalDays) rolloverSeason();
+    currentDay += 1;
+    saveProgress({ v: 1, seasonIdx, day: currentDay });
+    liveGameSeeds = simulateDaySeeds(currentDay);
+    for (const seed of liveGameSeeds) {
+      aggregateGame(
+        { events: seed.events, input: seed.input, day: currentDay },
+        aggregatesWithLive,
+        aggCtx,
+      );
+      (aggregatesWithLive as unknown as { gamesProcessed: number }).gamesProcessed += 1;
+    }
+    liveGames = mintLiveGames(liveGameSeeds);
+    selectedIdx = Math.min(selectedIdx, liveGames.length - 1);
+    projectionsCache = null;
+    handle.setActiveGame(liveGames[selectedIdx]!);
+    handle.jumpTo(0);
+    onChannelChanged();
+    refreshChannelLabel();
+  };
+
+  const directorTick = () => {
+    if (!handle.isFinished()) return;
+    const tick = handle.currentSimTime();
+    const stillLive = liveGames
+      .map((_, i) => i)
+      .filter((i) => i !== selectedIdx && gameEndT(liveGames[i]!) > tick);
+    if (stillLive.length === 0) {
+      advanceDay();
+      return;
+    }
+    if (performance.now() - lastManualSwitchAt < MANUAL_HOLD_MS) return;
+    selectedIdx = pickMostInteresting(stillLive, tick);
+    handle.setActiveGame(liveGames[selectedIdx]!);
+    onChannelChanged();
+    refreshChannelLabel();
+  };
+
   const switchChannel = (delta: number) => {
     const next = (selectedIdx + delta + liveGames.length) % liveGames.length;
     if (next === selectedIdx) return;
+    lastManualSwitchAt = performance.now();
     selectedIdx = next;
     handle.setActiveGame(liveGames[selectedIdx]!);
     onChannelChanged();
-    if (channelLabel) channelLabel.textContent = getChannelText();
+    refreshChannelLabel();
   };
 
   const setChannelByGameId = (gameId: string) => {
     const idx = liveGames.findIndex((g) => g.entry.gameId === gameId);
     if (idx >= 0 && idx !== selectedIdx) {
+      lastManualSwitchAt = performance.now();
       selectedIdx = idx;
       handle.setActiveGame(liveGames[selectedIdx]!);
       onChannelChanged();
-      if (channelLabel) channelLabel.textContent = getChannelText();
+      refreshChannelLabel();
     }
   };
 
@@ -565,11 +768,12 @@ const main = () => {
       ev.preventDefault();
     } else if (/^[1-9]$/.test(ev.key)) {
       const target = parseInt(ev.key, 10) - 1;
-      if (target < liveGames.length) {
+      if (target < liveGames.length && target !== selectedIdx) {
+        lastManualSwitchAt = performance.now();
         selectedIdx = target;
         handle.setActiveGame(liveGames[selectedIdx]!);
         onChannelChanged();
-        if (channelLabel) channelLabel.textContent = getChannelText();
+        refreshChannelLabel();
       }
     }
   });
@@ -585,16 +789,16 @@ const main = () => {
   // and the LeagueHistory itself were built above so each live game's
   // SceneContext could carry career BvP data into the HUD.
 
-  // Lazy projections — single cached set per session.
+  // Lazy projections — cached per live day (advanceDay invalidates).
   let projectionsCache: ProjectionSet | null = null;
   const getProjections = (): ProjectionSet => {
     if (!projectionsCache) {
       projectionsCache = buildProjections({
-        seasonYear: league.season.year,
+        seasonYear,
         teams: league.teams,
-        schedule,
+        schedule: activeSchedule,
         aggregates: aggregatesWithLive,
-        currentDay: LIVE_DAY,
+        currentDay,
         simulations: 500, // dial down for browser snappiness; 1000 still cheap
         seed: SEED,
       });
@@ -638,10 +842,14 @@ const main = () => {
 
   const menu = mountMenu(document.body, {
     getAggregates: () => aggregatesWithLive,
-    getTeamGamesPlayed: () => teamGamesPlayed,
+    getTeamGamesPlayed: () => currentDay,
     teams: league.teams,
     playerIndex,
-    schedule,
+    // Live getter: season rollover swaps in a fresh schedule and the menu
+    // should follow it, not the year-1 snapshot.
+    get schedule() {
+      return activeSchedule;
+    },
     stadiums: stadiumIndex,
     getProjections,
     getLiveGames: buildLiveSummaries,
