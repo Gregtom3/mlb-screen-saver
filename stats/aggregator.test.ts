@@ -74,6 +74,34 @@ describe('buildSeasonAggregates', () => {
     }
   });
 
+  it('earned runs never exceed runs allowed, and errors produce unearned runs', () => {
+    const { league, games } = playFirstNDays(0xb5e_e5, 6);
+    const agg = buildSeasonAggregates(games, league.teams, league.players);
+    let totalR = 0;
+    let totalER = 0;
+    for (const line of agg.pitching.values()) {
+      expect(line.ER).toBeLessThanOrEqual(line.R);
+      expect(line.ER).toBeGreaterThanOrEqual(0);
+      totalR += line.R;
+      totalER += line.ER;
+    }
+    // Across a 6-day batch some reached-on-error runners come around to
+    // score, so league-wide ER must sit strictly below R.
+    expect(totalER).toBeLessThan(totalR);
+  });
+
+  it('by-month split runs sum to the batter top-line R', () => {
+    const { league, games } = playFirstNDays(0xb5e_e6, 8);
+    const agg = buildSeasonAggregates(games, league.teams, league.players);
+    let leagueR = 0;
+    for (const line of agg.batting.values()) {
+      const monthR = Object.values(line.byMonth).reduce((sum, m) => sum + m.R, 0);
+      expect(monthR).toBe(line.R);
+      leagueR += line.R;
+    }
+    expect(leagueR).toBeGreaterThan(0);
+  });
+
   it('hits split as singles + doubles + triples + HR', () => {
     const { league, games } = playFirstNDays(0xb5e_d3, 1);
     const agg = buildSeasonAggregates(games, league.teams, league.players);

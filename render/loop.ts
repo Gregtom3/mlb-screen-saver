@@ -248,7 +248,11 @@ export const createRenderLoop = (
 
   const frame = (now: number) => {
     if (!playing) return;
-    const dt = lastFrameMs === null ? 0 : (now - lastFrameMs) / 1000;
+    // Clamp the frame delta so a backgrounded tab (rAF suspended) doesn't
+    // fast-forward the game and dump the whole event backlog into the
+    // audio/ambience callbacks in one frame when the user returns.
+    const MAX_FRAME_DT = 1;
+    const dt = lastFrameMs === null ? 0 : Math.min((now - lastFrameMs) / 1000, MAX_FRAME_DT);
     lastFrameMs = now;
     simTime = Math.min(finalT(game), simTime + dt * ticksPerSecond);
     const dueEvents = collectDueEvents();

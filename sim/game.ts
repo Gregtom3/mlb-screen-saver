@@ -688,10 +688,13 @@ interface AdvanceResult {
 
 type RunnerEvent = { runnerId: PlayerId; from: 0 | 1 | 2 | 3; to: 0 | 1 | 2 | 3; out: boolean };
 
-const advanceForOutcome = (
+// Exported for unit tests — the baserunning table is a sim behavior of its
+// own and gets fixed-seed coverage independent of full games.
+export const advanceForOutcome = (
   outcome: AtBatOutcome,
   batterId: PlayerId,
   bases: BasesState,
+  outs: number,
   rng: PRNG,
   mods: CoachingMods,
 ): AdvanceResult => {
@@ -811,7 +814,13 @@ const advanceForOutcome = (
         outsAdded += 1;
       }
       if (bases.second) next.third = bases.second;
-      if (bases.third) score(bases.third, 3);
+      // No run scores when the double play ends the inning (force/batter
+      // out at first is the third out). With 0 outs the runner from 3rd
+      // crosses before the relay completes.
+      if (bases.third) {
+        if (outs === 0) score(bases.third, 3);
+        // else: inning over, runner stranded — leave 3rd empty.
+      }
       // batter out at 1st
       runnerEvents.push({ runnerId: batterId, from: 0, to: 1, out: true });
       outsAdded += 1;
@@ -826,9 +835,19 @@ const advanceForOutcome = (
       if (bases.first) {
         runnerEvents.push({ runnerId: bases.first, from: 1, to: 2, out: true });
         outsAdded += 1;
+        // Trailing forced runners advance behind the force at 2B: with
+        // 1st+2nd the runner on 2nd must take 3rd; with the bases loaded
+        // the runner on 3rd is forced home and scores.
+        if (bases.second) {
+          if (bases.third) score(bases.third, 3);
+          advanceTo(bases.second, 2, 3);
+        } else if (bases.third) {
+          next.third = bases.third;
+        }
+      } else {
+        if (bases.second) next.second = bases.second;
+        if (bases.third) next.third = bases.third;
       }
-      if (bases.second) next.second = bases.second;
-      if (bases.third) next.third = bases.third;
       advanceTo(batterId, 0, 1);
       break;
     }
@@ -840,8 +859,39 @@ const advanceForOutcome = (
       break;
     }
     case 'groundout': {
-      // Batter thrown out at first. Runners hold (Phase 1 simplification).
-      carryRunners();
+      // Batter thrown out at first. With <2 outs this is a productive out:
+      // a grounder that survived the DP/FC escalation means the force was
+      // beaten, so forced runners move up, and the runner on 3rd scores on
+      // the contact play about half the time. With 2 outs the play ends
+      // the inning, so everyone holds and nothing scores.
+      if (outs < 2) {
+        const forceAt3 = bases.first !== null && bases.second !== null;
+        const forceHome = forceAt3 && bases.third !== null;
+        let thirdVacated = bases.third === null;
+        if (bases.third) {
+          if (forceHome || rng.next() < 0.5) {
+            score(bases.third, 3);
+            thirdVacated = true;
+          } else {
+            next.third = bases.third;
+          }
+        }
+        let secondVacated = bases.second === null;
+        if (bases.second) {
+          if (forceAt3 || (thirdVacated && rng.next() < 0.6)) {
+            advanceTo(bases.second, 2, 3);
+            secondVacated = true;
+          } else {
+            next.second = bases.second;
+          }
+        }
+        if (bases.first) {
+          if (secondVacated) advanceTo(bases.first, 1, 2);
+          else next.first = bases.first;
+        }
+      } else {
+        carryRunners();
+      }
       runnerEvents.push({ runnerId: batterId, from: 0, to: 1, out: true });
       outsAdded += 1;
       break;
@@ -1109,7 +1159,7 @@ const simulateAtBat = (
   }
 
   // Apply baserunning.
-  const advance = advanceForOutcome(outcome, batterId, state.bases, rng, battingMods);
+  const advance = advanceForOutcome(outcome, batterId, state.bases, state.outs, rng, battingMods);
 
   // Emit baserunner events for each movement.
   for (const ev of advance.runnerEvents) {
