@@ -128,11 +128,19 @@ const drawPlayer = (
     // rule still gives a sensible bat direction.
     const dir = p.position.x < 0 ? -1 : 1;
     const swingFrac = p.swingFrac ?? 0;
-    const tipReady = { x: -dir * pixelSize * 1.5, y: -pixelSize * 7 };
-    const tipFollow = { x: dir * pixelSize * 7, y: pixelSize * 0.5 };
-    const tipX = tipReady.x + (tipFollow.x - tipReady.x) * swingFrac;
-    const tipY = tipReady.y + (tipFollow.y - tipReady.y) * swingFrac;
-    const handleX = dir * pixelSize * 1.5;
+    // Quadratic sweep: cocked high on the batter's outside shoulder →
+    // extended out front over the plate → follow-through wrapped across the
+    // body. (The old linear lerp travelled plate-side → away-side, which
+    // read as swinging backwards.)
+    const tipReady = { x: dir * pixelSize * 2.2, y: -pixelSize * 6 };
+    const tipContact = { x: -dir * pixelSize * 2, y: -pixelSize * 8.5 };
+    const tipFollow = { x: -dir * pixelSize * 7, y: -pixelSize * 1 };
+    const u = 1 - swingFrac;
+    const tipX =
+      u * u * tipReady.x + 2 * u * swingFrac * tipContact.x + swingFrac * swingFrac * tipFollow.x;
+    const tipY =
+      u * u * tipReady.y + 2 * u * swingFrac * tipContact.y + swingFrac * swingFrac * tipFollow.y;
+    const handleX = dir * pixelSize * 1.2;
     const handleY = -pixelSize * 1.5;
     ctx.strokeStyle = '#d6b78a';
     ctx.lineWidth = Math.max(1.5, pixelSize * 1.1);

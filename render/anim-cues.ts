@@ -30,9 +30,6 @@ const HORN_THROW_TICKS = 7;
 const HORN_LOB_TICKS = 9;
 const HORN_BAG_HOLD = 3;
 
-const TOSS_FLIGHT_TICKS = 8;
-const TOSS_HOLD_TICKS = 4;
-const INNING_WALK_OFF_TICKS = 18;
 
 // Walk-up-jingle pacing — anchored to the *previous* atBatEnd plus a
 // settle window, NOT the new batter's first pitch. The song should kick
@@ -91,27 +88,6 @@ const buildHornCues = (pitchT: number): AnimAudioCue[] => {
   cues.push({ t: cursor, kind: 'toss-throw' });
   cursor += HORN_LOB_TICKS;
   cues.push({ t: cursor, kind: 'toss-mitt' });
-  return cues;
-};
-
-const buildInningEndTossCues = (
-  thirdOutT: number,
-  inningEndT: number,
-): AnimAudioCue[] => {
-  const r = hash01(`tossN|${thirdOutT}`);
-  const numTosses = r < 0.3 ? 0 : r < 0.75 ? 1 : 2;
-  const cues: AnimAudioCue[] = [];
-  if (numTosses === 0) return cues;
-  // Schedule starts at the start of the walk-off window.
-  let cursor = inningEndT - INNING_WALK_OFF_TICKS;
-  const totalNeeded = numTosses * (TOSS_FLIGHT_TICKS + TOSS_HOLD_TICKS) + 4;
-  if (cursor + totalNeeded > inningEndT) return cues;
-  for (let i = 0; i < numTosses; i++) {
-    cursor += TOSS_HOLD_TICKS;
-    cues.push({ t: cursor, kind: 'toss-throw' });
-    cursor += TOSS_FLIGHT_TICKS;
-    cues.push({ t: cursor, kind: 'toss-glove' });
-  }
   return cues;
 };
 
@@ -230,9 +206,8 @@ export const computeAnimAudioCues = (
         break;
       }
       case 'inningEnd': {
-        if (lastThirdOutT !== null) {
-          cues.push(...buildInningEndTossCues(lastThirdOutT, ev.t));
-        }
+        // (Inning-end toss cues retired alongside the visual — the longer
+        // walk-off window means nobody is home to receive a lob.)
         bases = { first: false, second: false, third: false };
         outsThisHalf = 0;
         lastThirdStrikePitchT = null;

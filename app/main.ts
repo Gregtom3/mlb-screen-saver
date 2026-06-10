@@ -64,12 +64,15 @@ import {
 
 const QS = new URLSearchParams(globalThis.location?.search ?? '');
 const SEED = QS.get('seed') ? parseSeed(QS.get('seed')!) : 0xba_5e_ba_11;
-const HISTORY_DAYS = QS.get('history') ? parseInt(QS.get('history')!, 10) : 4;
+// A fresh league opens on day 1 with empty stats and 0-0 standings — the
+// record book builds naturally as the season plays out on screen. Use
+// ?history=N to pre-play N days, ?priorSeasons=N for instant back-story.
+const HISTORY_DAYS = QS.get('history') ? parseInt(QS.get('history')!, 10) : 0;
 const LIVE_DAY = QS.get('day') ? parseInt(QS.get('day')!, 10) : HISTORY_DAYS + 1;
 const INITIAL_GAME = QS.get('game') ? parseInt(QS.get('game')!, 10) - 1 : 0;
 // Phase 6: pre-simulate N prior seasons in their entirety. Each one is ~1200
-// games / a few seconds in JS, so default low; opt in for richer history.
-const PRIOR_SEASONS = QS.get('priorSeasons') ? parseInt(QS.get('priorSeasons')!, 10) : 1;
+// games / a few seconds in JS. Default 0 — history is earned, not invented.
+const PRIOR_SEASONS = QS.get('priorSeasons') ? parseInt(QS.get('priorSeasons')!, 10) : 0;
 const PRIOR_SEASON_DAYS = QS.get('priorSeasonDays')
   ? parseInt(QS.get('priorSeasonDays')!, 10)
   : 0; // 0 = full schedule

@@ -80,6 +80,16 @@ const CATCHER_LOB_TICKS = 10;
 // 20 ticks/sec playback rate.
 const FIRST_PITCH_HOLD_TICKS = 30;
 const RUNNER_TRAVEL_TICKS_PER_BASE = 7; // ~7 sim sec/base — pleasant screensaver pace, slower than real-time
+// Swing read-out pacing. The pitch flight is only ~6 ticks, so without a
+// follow-through hold the entire swing lives inside a tenth of a wall-second
+// and reads as a twitch. Hold the finished swing, then ease back to ready —
+// that's what makes a swing-and-miss legible.
+const SWING_HOLD_TICKS = 10;
+const SWING_RESET_TICKS = 8;
+// The batter sprints toward 1B on any ball put in play (nobody knows the fly
+// is caught until it's caught). Capped short of the bag so a retired batter
+// never visually "arrives safe".
+const BATTER_RUN_OUT_CAP = 0.85;
 // On-deck batter pacing during the gap between at-bats. The 25-tick gap
 // between atBatEnd and the next pitch breaks down as: a settle window
 // (previous play finishes, walk-up jingle leads in), then a slow walk
@@ -163,11 +173,19 @@ const onDeckCircleForSide = (side: 'home' | 'away'): FieldPoint =>
 // a per-position start delay so the team doesn't move as one rigid block —
 // the catcher and pitcher walk (slower, no delay) while the rest jog
 // (faster, with small staggered delays) for a "team trickle" feel.
-const INNING_WALK_OFF_TICKS = 18;
-const INNING_WALK_ON_TICKS = 22;
-const WALK_DURATION_TICKS = 14;   // catcher + pitcher walk pace
-const JOG_DURATION_TICKS = 9;     // every other position jogs
-const POS_DELAY_MAX_TICKS = 4;    // max staggered delay per position
+// The sim leaves a 60-tick event-free gap before each inningEnd; starting
+// the walk-off ~46 ticks out (instead of 18) gives every fielder time to
+// cover their real distance at a believable pace instead of teleport-
+// sprinting in the final second.
+const INNING_WALK_OFF_TICKS = 46;
+const INNING_WALK_ON_TICKS = 24;
+// Per-fielder pacing is SPEED-based, not duration-based: the corner
+// outfielder has ~270 ft to cover and the catcher ~50, so giving everyone
+// the same duration made the outfielders fly. Distances divide by these.
+const WALK_SPEED_FT_PER_TICK = 2.2;       // catcher + pitcher amble off
+const JOG_SPEED_FT_PER_TICK = 7.5;        // position players jog off
+const TAKE_FIELD_SPEED_FT_PER_TICK = 12;  // everyone runs out to take the field
+const POS_DELAY_MAX_TICKS = 6;            // max staggered delay per position
 
 // Deterministic 0..1 hash so animation choices (toss counts, around-the-
 // horn yes/no, per-position delays) are reproducible from the event log.
@@ -188,16 +206,26 @@ const transitionTimingFor = (
   slot: FielderPos,
   inningEndT: number,
   windowTicks: number,
+  distFt: number,
+  phase: 'walk-off' | 'walk-on',
 ): { delay: number; duration: number } => {
-  const baseDuration = isWalkPosition(slot)
-    ? WALK_DURATION_TICKS
-    : JOG_DURATION_TICKS;
+  // Walking off, the battery ambles and everyone else jogs; taking the
+  // field, everyone runs out (which is what real teams do) so even the
+  // corner outfielders make it before the first pitch.
+  const speed =
+    phase === 'walk-on'
+      ? isWalkPosition(slot)
+        ? JOG_SPEED_FT_PER_TICK
+        : TAKE_FIELD_SPEED_FT_PER_TICK
+      : isWalkPosition(slot)
+        ? WALK_SPEED_FT_PER_TICK
+        : JOG_SPEED_FT_PER_TICK;
   // Catcher + pitcher get little to no delay (they're already near the
   // mound/plate when the inning ends, no sense lingering); other fielders
-  // get up to POS_DELAY_MAX_TICKS of variable lag.
-  const delaySpread = isWalkPosition(slot) ? 1 : POS_DELAY_MAX_TICKS;
+  // get a variable lag — kept short on walk-on where the window is tight.
+  const delaySpread = isWalkPosition(slot) ? 1 : phase === 'walk-on' ? 2 : POS_DELAY_MAX_TICKS;
   const delay = hash01(`delay|${inningEndT}|${slot}`) * delaySpread;
-  const duration = Math.min(baseDuration, windowTicks - delay);
+  const duration = Math.min(distFt / speed, windowTicks - delay);
   return { delay, duration: Math.max(4, duration) };
 };
 
@@ -423,84 +451,6 @@ const buildHornChoreo = (pitchT: number): HornChoreo => {
   return { segments, endT: cursor };
 };
 
-// =========================================================================
-// Inning-end ball tossing — between the 3rd-out atBatEnd and inningEnd, the
-// fielders sometimes flip the ball around (0–2 casual tosses) before the
-// pitcher walks to the dugout. Adds life to the dead time.
-// =========================================================================
-const TOSS_FLIGHT_TICKS = 8;
-const TOSS_HOLD_TICKS = 4;
-type TossSlot = '1B' | '2B' | '3B' | 'SS' | 'P' | 'C';
-const TOSS_POOL: readonly TossSlot[] = ['1B', '2B', '3B', 'SS', 'P', 'C'];
-
-interface TossSegment {
-  readonly startT: number;
-  readonly endT: number;
-  readonly from: FieldPoint;
-  readonly to: FieldPoint;
-  readonly arrivalSfx: 'glove' | 'mitt';
-}
-
-interface TossChoreo {
-  readonly segments: readonly TossSegment[];
-  // When the last segment lands — the renderer parks the ball at that
-  // fielder's home position until inningEnd's walk-off carries everyone off.
-  readonly settleT: number;
-  readonly settlePos: FieldPoint;
-}
-
-const buildInningEndTosses = (
-  // The atBatEnd of the 3rd out — drives the seed for deterministic pick.
-  thirdOutT: number,
-  // The inningEnd — toss schedule must finish before this so the ball
-  // doesn't whip across the field while fielders are walking off.
-  inningEndT: number,
-  // Where the ball is at the start of tossing — usually the mound after the
-  // post-play return-to-mound, or the catcher's mitt after a strikeout that
-  // didn't trigger around-the-horn. Caller passes the position + tick.
-  startPos: FieldPoint,
-  startSlot: TossSlot,
-  startT: number,
-): TossChoreo => {
-  // 0-toss case has weight 0.30, 1-toss 0.45, 2-toss 0.25.
-  const r = hash01(`tossN|${thirdOutT}`);
-  const numTosses = r < 0.3 ? 0 : r < 0.75 ? 1 : 2;
-  // Total schedule length must fit before inningEnd. Each toss = flight +
-  // post-hold; we leave a few ticks of slack so the ball settles before the
-  // walk-off claims the screen.
-  const totalNeeded = numTosses * (TOSS_FLIGHT_TICKS + TOSS_HOLD_TICKS) + 4;
-  let cursor = startT;
-  const segments: TossSegment[] = [];
-  let lastSlot: TossSlot = startSlot;
-  let lastPos = startPos;
-  if (cursor + totalNeeded > inningEndT) {
-    return { segments, settleT: cursor, settlePos: lastPos };
-  }
-  for (let i = 0; i < numTosses; i++) {
-    // Pick a different infielder than the current ball-holder. Hash uses
-    // (thirdOutT, i) so the schedule is stable per inning.
-    const candidates = TOSS_POOL.filter((s) => s !== lastSlot);
-    const pick = candidates[
-      Math.floor(hash01(`tossPick|${thirdOutT}|${i}`) * candidates.length)
-    ]!;
-    const to = FIELDER_HOME_POSITIONS[pick];
-    cursor += TOSS_HOLD_TICKS;
-    segments.push({
-      startT: cursor,
-      endT: cursor + TOSS_FLIGHT_TICKS,
-      from: lastPos,
-      to,
-      // Pitcher receiving = mitt (well, glove, but let's use mitt for the
-      // softer pop); everyone else = glove. Cosmetic.
-      arrivalSfx: pick === 'P' ? 'mitt' : 'glove',
-    });
-    cursor += TOSS_FLIGHT_TICKS;
-    lastSlot = pick;
-    lastPos = to;
-  }
-  return { segments, settleT: cursor, settlePos: lastPos };
-};
-
 interface PitchInProgress {
   readonly t: number;
   readonly outcomeKnown: boolean;
@@ -584,6 +534,10 @@ export const buildScene = (
     // Side of the batting team at the moment the at-bat ended — locks in
     // the dugout direction even after `half` flips on inningEnd.
     readonly battingSide: 'home' | 'away';
+    // Where the walk-off starts. A batter who was running out a fly ball
+    // peels off toward the dugout from wherever the catch caught him,
+    // instead of teleporting back to the box.
+    readonly fromPos?: FieldPoint;
   } | null = null;
   // Most recent atBatEnd we've consumed. Cleared on the next pitch event,
   // so `lastAtBatEndT !== null` (combined with no newer pitch) means we're
@@ -601,6 +555,9 @@ export const buildScene = (
   // horn flag, since the choreo timing keys off the pitch (when the ball
   // landed in the catcher's mitt) rather than the atBatEnd 50 ticks later.
   let lastThirdStrikePitchT: number | null = null;
+  // First pitch t of the at-bat in progress — used to tell whether the most
+  // recent contact belongs to THIS at-bat (drives the batter run-out).
+  let currentAbFirstPitchT: number | null = null;
   // Most recent inningEnd event, captured at the moment we apply it, plus
   // the fielding side that was on the field BEFORE the half flipped. The
   // walk-on phase reads this to know who's heading back to the dugout
@@ -669,6 +626,7 @@ export const buildScene = (
         // from the inter-at-bat gap" — gameStart's first pitch picks up
         // this flag too via the new-batter branch.
         const isFirstOfAtBat = isNewBatter || wasInAtBatGap;
+        if (isFirstOfAtBat) currentAbFirstPitchT = ev.t;
         lastPitch = {
           t: ev.t,
           outcomeKnown: r === 'in-play',
@@ -765,20 +723,26 @@ export const buildScene = (
           };
         }
         // Capture an outgoing-batter walk-off when the batter never became
-        // a runner. K-types and air outs always qualify; ground outs always
-        // fire a baserunner event so they go out the runner path instead.
+        // a runner. K-types and air outs (sac flies included) qualify;
+        // ground outs always fire a baserunner event so they go out the
+        // runner path instead. If the batter was mid-sprint running out a
+        // ball in play, the walk-off starts from that spot up the line.
         const isOut = outsAddedFor(ev.outcome) > 0;
-        if (
-          isOut &&
-          !currentBatterRanOut &&
-          currentBatterId &&
-          ev.outcome !== 'sac-fly' &&
-          ev.outcome !== 'fielders-choice'
-        ) {
+        if (isOut && !currentBatterRanOut && currentBatterId) {
+          let fromPos: FieldPoint | undefined;
+          if (lastContactT !== null && batter) {
+            const outBoxX = batter.bats === 'L' ? 4.5 : -4.5;
+            const runFrac = Math.min(
+              BATTER_RUN_OUT_CAP,
+              Math.max(0, (ev.t - lastContactT) / RUNNER_TRAVEL_TICKS_PER_BASE),
+            );
+            fromPos = lerpPoint({ x: outBoxX, y: 2.5 }, FIRST_BASE, runFrac);
+          }
           lastOutgoingBatter = {
             batterId: currentBatterId,
             atBatEndT: ev.t,
             battingSide: half === 'top' ? 'away' : 'home',
+            ...(fromPos ? { fromPos } : {}),
           };
         }
         // Around-the-horn flag: strikeout + no one on base + not the 3rd
@@ -943,20 +907,28 @@ export const buildScene = (
   // path with per-position pacing (catcher + pitcher walk; others jog) plus
   // a small staggered delay so the team trickles rather than moving in lock-
   // step.
+  // Returns null when the fielder is inside the dugout (walked off, or not
+  // yet emerged) so the caller can skip the sprite entirely.
   const fielderPosFor = (
     playerId: string,
     slot: FielderPos,
     homePos: FieldPoint,
-  ): FieldPoint => {
+  ): FieldPoint | null => {
     if (inningTransition && transitionInningEndT !== null) {
       const windowTicks =
         inningTransition.phase === 'walk-off'
           ? INNING_WALK_OFF_TICKS
           : INNING_WALK_ON_TICKS;
+      const distFt = Math.hypot(
+        homePos.x - fieldingDugout.x,
+        homePos.y - fieldingDugout.y,
+      );
       const { delay, duration } = transitionTimingFor(
         slot,
         transitionInningEndT,
         windowTicks,
+        distFt,
+        inningTransition.phase,
       );
       // Local 0..1 progress for THIS fielder, clamped at the edges of their
       // delay/duration sub-window.
@@ -973,8 +945,12 @@ export const buildScene = (
       );
       const eased = easeInOut(localFrac);
       if (inningTransition.phase === 'walk-off') {
+        // Reached the doorway → inside the dugout, no sprite.
+        if (localFrac >= 1) return null;
         return lerpPoint(homePos, fieldingDugout, eased);
       }
+      // Walk-on: still in the dugout until their delay passes.
+      if (elapsedInWindow < delay) return null;
       return lerpPoint(fieldingDugout, homePos, eased);
     }
     if (!choreoActive || !activeChoreo) return homePos;
@@ -991,35 +967,44 @@ export const buildScene = (
   };
   const fielders: ScenePlayer[] = [];
   if (pitcher) {
-    fielders.push({
-      id: pitcher.id,
-      role: 'pitcher',
-      position: fielderPosFor(pitcher.id, 'P', fielderPositionFor('P')),
-      primaryColor: fieldingColors.primary,
-      secondaryColor: fieldingColors.secondary,
-      heightScale: scaleFromHeight(pitcher.heightFt),
-    });
-  }
-  const catcherPlayer = pickByPrimary(ctx.input.playerIndex, fieldingLineupIds, 'C');
-  const catcher: ScenePlayer | null = catcherPlayer
-    ? {
-        id: catcherPlayer.id,
-        role: 'catcher',
-        position: fielderPosFor(catcherPlayer.id, 'C', fielderPositionFor('C')),
+    const pitcherPos = fielderPosFor(pitcher.id, 'P', fielderPositionFor('P'));
+    if (pitcherPos) {
+      fielders.push({
+        id: pitcher.id,
+        role: 'pitcher',
+        position: pitcherPos,
         primaryColor: fieldingColors.primary,
         secondaryColor: fieldingColors.secondary,
-        heightScale: scaleFromHeight(catcherPlayer.heightFt),
-      }
+        heightScale: scaleFromHeight(pitcher.heightFt),
+      });
+    }
+  }
+  const catcherPlayer = pickByPrimary(ctx.input.playerIndex, fieldingLineupIds, 'C');
+  const catcherPos = catcherPlayer
+    ? fielderPosFor(catcherPlayer.id, 'C', fielderPositionFor('C'))
     : null;
+  const catcher: ScenePlayer | null =
+    catcherPlayer && catcherPos
+      ? {
+          id: catcherPlayer.id,
+          role: 'catcher',
+          position: catcherPos,
+          primaryColor: fieldingColors.primary,
+          secondaryColor: fieldingColors.secondary,
+          heightScale: scaleFromHeight(catcherPlayer.heightFt),
+        }
+      : null;
   if (catcher) fielders.push(catcher);
 
   for (const pos of ['1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF'] as const) {
     const p = pickByPrimary(ctx.input.playerIndex, fieldingLineupIds, pos);
     if (!p) continue;
+    const fpos = fielderPosFor(p.id, pos, fielderPositionFor(pos));
+    if (!fpos) continue;
     fielders.push({
       id: p.id,
       role: 'fielder',
-      position: fielderPosFor(p.id, pos, fielderPositionFor(pos)),
+      position: fpos,
       primaryColor: fieldingColors.primary,
       secondaryColor: fieldingColors.secondary,
       heightScale: scaleFromHeight(p.heightFt),
@@ -1042,6 +1027,7 @@ export const buildScene = (
   let batterScene: ScenePlayer | null = null;
   if (batter && phase === 'live' && !batterIsRunner && !fieldIsClearOfBatter && !inAtBatGap) {
     const boxX = batter.bats === 'L' ? 4.5 : -4.5;
+    const boxPos = { x: boxX, y: 2.5 };
     let swingFrac = 0;
     if (lastPitch && lastPitch.wasSwing) {
       // First-pitch hold offsets the swing by the same amount as the ball
@@ -1050,17 +1036,43 @@ export const buildScene = (
       const elapsed = simTime - lastPitch.t - flightOffset;
       const swingStartT = PITCH_FLIGHT_TICKS * 0.55;
       const swingEndT = PITCH_FLIGHT_TICKS * 0.95;
-      if (elapsed > swingStartT && elapsed < swingEndT + 4) {
-        swingFrac = Math.max(
-          0,
-          Math.min(1, (elapsed - swingStartT) / (swingEndT - swingStartT)),
-        );
+      if (elapsed > swingStartT) {
+        const x = (elapsed - swingStartT) / (swingEndT - swingStartT);
+        if (x <= 1) {
+          // Accelerating whip — loads slow, snaps through the zone.
+          swingFrac = x * x;
+        } else if (elapsed <= swingEndT + SWING_HOLD_TICKS) {
+          // Hold the follow-through so the swing (and the miss) registers.
+          swingFrac = 1;
+        } else {
+          // Ease the bat back to the ready stance.
+          const back = (elapsed - swingEndT - SWING_HOLD_TICKS) / SWING_RESET_TICKS;
+          swingFrac = Math.max(0, 1 - back);
+        }
       }
+    }
+    // Ball in play and no baserunner event yet → the batter busts it up the
+    // line toward 1B (you run out a fly ball; you don't admire it). On hits
+    // and grounders the sim's baserunner event takes over within the same
+    // tick, so this path only shows on air balls — exactly the case where
+    // the batter used to stand at the plate watching.
+    let batterPos = boxPos;
+    const contactIsThisAb =
+      lastContactT !== null &&
+      currentAbFirstPitchT !== null &&
+      lastContactT >= currentAbFirstPitchT;
+    if (contactIsThisAb && simTime > lastContactT!) {
+      const runFrac = Math.min(
+        BATTER_RUN_OUT_CAP,
+        (simTime - lastContactT!) / RUNNER_TRAVEL_TICKS_PER_BASE,
+      );
+      batterPos = lerpPoint(boxPos, FIRST_BASE, runFrac);
+      swingFrac = 0; // bat's down, he's running
     }
     batterScene = {
       id: batter.id,
       role: 'batter',
-      position: { x: boxX, y: 2.5 },
+      position: batterPos,
       primaryColor: battingColors.primary,
       secondaryColor: battingColors.secondary,
       swingFrac,
@@ -1211,57 +1223,9 @@ export const buildScene = (
     } // end: else (simTime >= flightStartT)
   }
 
-  // Inning-end ball tossing — between the 3rd-out's settle and the inningEnd
-  // event, fielders sometimes flip the ball around (0–2 casual tosses). The
-  // ball remains visible during the walk-off transition for these tosses.
-  if (
-    upcomingInningEnd !== null &&
-    inningTransition !== null &&
-    inningTransition.phase === 'walk-off'
-  ) {
-    // Anchor the toss schedule to a stable t — the start of the walk-off
-    // window. The ball "starts" in the pitcher's hand at that moment
-    // (post-action settle has parked it there) unless around-the-horn just
-    // ran, in which case it's also at the mound (final lob landed there).
-    const tossStartT = upcomingInningEnd - INNING_WALK_OFF_TICKS;
-    const tossChoreo = buildInningEndTosses(
-      upcomingInningEnd,
-      upcomingInningEnd,
-      PITCHERS_MOUND,
-      'P',
-      tossStartT,
-    );
-    if (tossChoreo.segments.length > 0 && simTime >= tossStartT) {
-      const seg = tossChoreo.segments.find(
-        (s) => simTime >= s.startT && simTime <= s.endT,
-      );
-      if (seg) {
-        const dur = seg.endT - seg.startT;
-        const frac = dur > 0 ? Math.min(1, (simTime - seg.startT) / dur) : 1;
-        ballPos = lerpPoint(seg.from, seg.to, frac);
-        ballHeight = 6 * Math.sin(frac * Math.PI);
-        ballVisible = true;
-        ballInFlight = true;
-      } else {
-        // Between/before/after segments — ball is held at the most recent
-        // landing point (or the start point if nothing has thrown yet).
-        let pos = PITCHERS_MOUND;
-        for (const s of tossChoreo.segments) {
-          if (simTime >= s.endT) pos = s.to;
-        }
-        ballPos = pos;
-        ballHeight = 0;
-        // Toss-active overrides "hide ball during walk-off"; once the last
-        // toss settles, hide the ball so the dugout walk reads cleanly.
-        const allDone =
-          tossChoreo.segments.length > 0 &&
-          simTime >
-            tossChoreo.segments[tossChoreo.segments.length - 1]!.endT + 2;
-        ballVisible = !allDone;
-        ballInFlight = false;
-      }
-    }
-  }
+  // (Inning-end ball tossing was retired when the walk-off window grew to
+  // cover the whole gap — fielders leave their positions too early to
+  // receive casual lobs. Around-the-horn after mid-inning strikeouts stays.)
 
   // HUD aggregates — derived from the same event prefix so the line score,
   // batter card, and on-deck indicator always agree with what's on the field.
@@ -1428,17 +1392,31 @@ export const buildScene = (
       const boxPos = { x: boxX, y: 2.5 };
       let pos = circle;
       let swingFrac = tri;
+      let intoDugout = false;
       if (
         lastAtBatEndT !== null &&
         simTime > lastAtBatEndT + ON_DECK_SETTLE_TICKS
       ) {
         const elapsed = simTime - lastAtBatEndT - ON_DECK_SETTLE_TICKS;
         const frac = Math.min(1, elapsed / ON_DECK_WALK_TO_BOX_TICKS);
-        pos = lerpPoint(circle, boxPos, easeInOut(frac));
-        // Once they're walking, dampen the warmup swing so they look like
-        // they're heading to work, not still loose in the on-deck circle.
-        swingFrac = tri * (1 - frac);
+        if (outs >= 3) {
+          // That at-bat ended the half — nobody walks up to hit. The
+          // on-deck batter shoulders the bat and ducks back into the
+          // dugout instead (he leads off next inning from there).
+          const dugout = dugoutDoorwayForSide(battingSide);
+          pos = lerpPoint(circle, dugout, easeInOut(frac));
+          swingFrac = 0;
+          intoDugout = frac >= 1;
+        } else {
+          pos = lerpPoint(circle, boxPos, easeInOut(frac));
+          // Once they're walking, dampen the warmup swing so they look like
+          // they're heading to work, not still loose in the on-deck circle.
+          swingFrac = tri * (1 - frac);
+        }
       }
+      if (intoDugout) {
+        onDeckBatterScene = null;
+      } else
       onDeckBatterScene = {
         id: onDeckPlayer.id,
         role: 'on-deck',
@@ -1470,7 +1448,7 @@ export const buildScene = (
       const elapsed = simTime - lastOutgoingBatter.atBatEndT;
       const frac = easeInOut(elapsed / OUTGOING_WALK_TICKS);
       const boxX = outBatter.bats === 'L' ? 4.5 : -4.5;
-      const boxPos = { x: boxX, y: 2.5 };
+      const boxPos = lastOutgoingBatter.fromPos ?? { x: boxX, y: 2.5 };
       const dugout = dugoutDoorwayForSide(lastOutgoingBatter.battingSide);
       const colors = ctx.teamColors.get(
         lastOutgoingBatter.battingSide === 'home'
