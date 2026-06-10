@@ -103,17 +103,29 @@ const drawTierStructure = (
   front: readonly BowlPoint[],
   tier: BowlTierSpec,
 ): void => {
+  // Pad the structural fill a touch beyond the tier's nominal band so
+  // adjacent tiers OVERLAP instead of abutting edge-to-edge. Abutting
+  // float-coordinate polygons leave antialiased hairline seams (and the
+  // offset polyline develops small notches at sharp curve joints), which
+  // let the sky/grass behind the bowl peek through as "polygonal gaps".
+  const SEAM_PAD_PX = 1.5;
   const { inner, outer } = tierPolygon(
     front,
-    tier.innerOffsetPx,
-    tier.depthPx,
+    tier.innerOffsetPx - SEAM_PAD_PX,
+    tier.depthPx + SEAM_PAD_PX * 2,
     tier.riseLiftPx,
   );
   // Back-wall concrete fill. This is what gives the bowl its silhouette.
+  // Fill + same-color stroke: the stroke seals antialiasing cracks along
+  // the ribbon edges and bridges any notch the offset geometry opened.
   ctx.save();
   ctx.fillStyle = tier.backWallColor;
+  ctx.strokeStyle = tier.backWallColor;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
   tracePolygon(ctx, inner, outer);
   ctx.fill();
+  ctx.stroke();
   ctx.restore();
 
   // Section block colors — vertical stripes across the tier ribbon. We walk

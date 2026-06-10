@@ -3,7 +3,7 @@
 A current-state map so a fresh session doesn't have to re-survey the repo.
 Update this file whenever you finish a chunk. Keep it short.
 
-Last reviewed: 2026-06-10 (after living-league pass — `PHASE_LIVING_LEAGUE.md`. Playoffs now run live in the endless loop (Bo5 Conference Series → Bo7 Final, champions into History); every rollover runs a real winter (aging curves, retirements → HoF gate, same-position rookie draft); a news ticker rotates finals/leaders/series status with breaking homers and champions; /director is live (adopt a franchise + posture → coaching-staff nudges); deterministic per-game weather (rain/snow/fog) draws in the renderer. Saves are v2 (playoffDay) and resume replays brackets + winters exactly. 151 tests passing.)
+Last reviewed: 2026-06-10 (after living-league + choreo-polish passes — see `PHASE_LIVING_LEAGUE.md`, `PHASE_CHOREO_POLISH.md`. Choreo pass: real swing arc with follow-through hold, batters run out balls in play, no walk-up at 3 outs, speed-based inning-gap pacing (no more flying outfielders), stadium tier seams sealed, fresh leagues start day 1 with empty stats. Earlier living-league pass — `PHASE_LIVING_LEAGUE.md`. Playoffs now run live in the endless loop (Bo5 Conference Series → Bo7 Final, champions into History); every rollover runs a real winter (aging curves, retirements → HoF gate, same-position rookie draft); a news ticker rotates finals/leaders/series status with breaking homers and champions; /director is live (adopt a franchise + posture → coaching-staff nudges); deterministic per-game weather (rain/snow/fog) draws in the renderer. Saves are v2 (playoffDay) and resume replays brackets + winters exactly. 151 tests passing.)
 
 ## Phase status
 
