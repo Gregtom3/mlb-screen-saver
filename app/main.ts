@@ -30,6 +30,7 @@ import {
   mountTicker,
   type GameMetadata,
   type LiveGameSummary,
+  type TickerHandle,
   type TickerItem,
 } from '../ui/index.js';
 import {
@@ -39,6 +40,7 @@ import {
   type FinishedGame,
   type SeasonAggregates,
 } from '../stats/index.js';
+import { createDirector, type DirectorHandle, type ManagerPosture } from '../director/index.js';
 import { buildProjections } from '../projections/index.js';
 import type { ProjectionSet } from '../projections/types.js';
 import {
@@ -353,6 +355,78 @@ const setupAudioToggle = (sfx: { setEnabled(b: boolean): void; isEnabled(): bool
   });
 };
 
+// Franchise-adoption controls: a team picker + managerial posture. The
+// director translates these into coaching-staff nudges for future slates.
+const setupDirectorControls = (
+  director: DirectorHandle,
+  teams: readonly Team[],
+  ticker: TickerHandle,
+) => {
+  const controls = document.getElementById('controls');
+  if (!controls) return;
+  const menuBtn = document.getElementById('open-menu');
+
+  const teamSelect = document.createElement('select');
+  teamSelect.id = 'manage-team';
+  teamSelect.title = 'Adopt a franchise — the broadcast opens on their games';
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = '★ manage…';
+  teamSelect.appendChild(none);
+  for (const t of teams) {
+    const opt = document.createElement('option');
+    opt.value = t.id;
+    opt.textContent = `★ ${t.abbr} · ${t.city} ${t.nickname}`;
+    teamSelect.appendChild(opt);
+  }
+
+  const postureSelect = document.createElement('select');
+  postureSelect.id = 'manage-posture';
+  postureSelect.title = "Managerial posture — applies from tomorrow's games";
+  for (const p of ['balanced', 'aggressive', 'cautious'] as const) {
+    const opt = document.createElement('option');
+    opt.value = p;
+    opt.textContent = p;
+    postureSelect.appendChild(opt);
+  }
+
+  const sync = () => {
+    const st = director.state();
+    teamSelect.value = st.favoriteTeamId ?? '';
+    postureSelect.value = st.posture;
+    postureSelect.disabled = st.favoriteTeamId === null;
+  };
+  sync();
+
+  teamSelect.addEventListener('change', () => {
+    const id = teamSelect.value || null;
+    director.setFavorite(id);
+    sync();
+    if (id) {
+      const t = teams.find((x) => x.id === id);
+      ticker.pushBreaking({
+        kind: 'news',
+        text: `New manager in ${t?.city ?? id}: you. Nudges shape tomorrow's games.`,
+      });
+    }
+  });
+  postureSelect.addEventListener('change', () => {
+    const v = postureSelect.value as ManagerPosture;
+    director.setPosture(v);
+    ticker.pushBreaking({
+      kind: 'news',
+      text: `Clubhouse memo: ${v} baserunning starts with tomorrow's games`,
+    });
+  });
+
+  if (menuBtn) {
+    controls.insertBefore(teamSelect, menuBtn);
+    controls.insertBefore(postureSelect, menuBtn);
+  } else {
+    controls.append(teamSelect, postureSelect);
+  }
+};
+
 const setupControls = (handle: RenderLoopHandle, channelLabel: HTMLElement | null, getChannelText: () => string) => {
   const playPauseBtn = document.getElementById('play-pause') as HTMLButtonElement | null;
   const speedSelect = document.getElementById('speed') as HTMLSelectElement | null;
@@ -407,6 +481,12 @@ const main = () => {
 
   const league = generateInitialLeague(SEED);
   const schedule = buildSchedule(league.teams, league.season.year);
+
+  // The viewer's franchise + posture. Applied to every game this session
+  // simulates (including resume replays) so the league stays deterministic
+  // as long as the settings don't change.
+  const director: DirectorHandle = createDirector(`8bb:director:${SEED.toString(16)}`);
+  const staffFor = (team: Team) => director.staffFor(team);
 
   // ---- Phase 6: simulate prior seasons (full or truncated) to populate the
   // History view. Each prior season uses a distinct seed offset so outcomes
@@ -497,7 +577,7 @@ const main = () => {
     const games: FinishedGame[] = [];
     for (let day = 1; day <= sched.totalDays; day++) {
       for (const entry of sched.entries.filter((e) => e.day === day)) {
-        const { input } = buildGameInput(league, entry, seedI, { players: currentPlayers });
+        const { input } = buildGameInput(league, entry, seedI, { players: currentPlayers, staffFor });
         games.push({ events: runGame(input), input, day });
       }
     }
@@ -508,7 +588,7 @@ const main = () => {
     while (!bracket.champion) {
       const slate = playoffGamesForDay(bracket, league.teams);
       const results = slate.map((g) => {
-        const { input } = buildGameInput(league, g, seedI, { players: currentPlayers });
+        const { input } = buildGameInput(league, g, seedI, { players: currentPlayers, staffFor });
         const events = runGame(input);
         const final = extractLiveState(events, Number.MAX_SAFE_INTEGER);
         return {
@@ -543,6 +623,7 @@ const main = () => {
     for (const entry of activeSchedule.entries.filter((e) => e.day === day)) {
       const { input } = buildGameInput(league, entry, seasonSeedFor(seasonIdx), {
         players: currentPlayers,
+        staffFor,
       });
       const events = runGame(input);
       historyGames.push({ events, input, day });
@@ -622,7 +703,7 @@ const main = () => {
         league,
         entry,
         seasonSeedFor(seasonIdx),
-        { players: currentPlayers },
+        { players: currentPlayers, staffFor },
       );
       const events = runGame(input);
       gameMetadata.set(entry.gameId, {
@@ -976,6 +1057,14 @@ const main = () => {
     liveGameSeeds = seeds;
     liveGames = mintLiveGames(liveGameSeeds);
     selectedIdx = Math.min(selectedIdx, liveGames.length - 1);
+    // Your franchise leads off: if the adopted team plays today, open there.
+    const fav = director.state().favoriteTeamId;
+    if (fav) {
+      const favIdx = liveGames.findIndex(
+        (g) => g.entry.homeTeamId === fav || g.entry.awayTeamId === fav,
+      );
+      if (favIdx >= 0) selectedIdx = favIdx;
+    }
     projectionsCache = null;
     handle.setActiveGame(liveGames[selectedIdx]!);
     handle.jumpTo(0);
@@ -1139,6 +1228,7 @@ const main = () => {
   });
 
   setupControls(handle, channelLabel, getChannelText);
+  setupDirectorControls(director, league.teams, ticker);
 
   const prevChannelBtn = document.getElementById('prev-channel') as HTMLButtonElement | null;
   const nextChannelBtn = document.getElementById('next-channel') as HTMLButtonElement | null;
