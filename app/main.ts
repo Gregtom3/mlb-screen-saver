@@ -6,6 +6,8 @@ import {
   playoffGamesForDay,
   runOffseason,
   seedPlayoffs,
+  seriesDecided,
+  seriesWinner,
   type PlayoffGameEntry,
   type PlayoffSeedEntry,
   type PlayoffState,
@@ -23,7 +25,13 @@ import {
   type TeamStanding,
   type SceneContext,
 } from '../render/index.js';
-import { mountMenu, type GameMetadata, type LiveGameSummary } from '../ui/index.js';
+import {
+  mountMenu,
+  mountTicker,
+  type GameMetadata,
+  type LiveGameSummary,
+  type TickerItem,
+} from '../ui/index.js';
 import {
   aggregateGame,
   buildSeasonAggregates,
@@ -392,6 +400,11 @@ const main = () => {
   }
   sizeCanvas(canvas);
 
+  // News ticker strip between the field and the controls bar.
+  const ticker = mountTicker(document.getElementById('app') ?? document.body, {
+    before: document.getElementById('controls'),
+  });
+
   const league = generateInitialLeague(SEED);
   const schedule = buildSchedule(league.teams, league.season.year);
 
@@ -753,6 +766,110 @@ const main = () => {
     return `ch ${selectedIdx + 1}/${liveGames.length}  ·  ${away?.abbr} @ ${home?.abbr}  ·  ${dayTag}${yearTag}`;
   };
 
+  // ---- News ticker feed. Day headlines rebuild whenever a new slate goes
+  // on the air; big live moments (homers, finals, champions) jump the queue.
+  const teamAbbrOf = (id: TeamId): string =>
+    league.teams.find((t) => t.id === id)?.abbr ?? id;
+  const playerNameOf = (id: PlayerId): string => {
+    const p = playerIndex.get(id);
+    return p ? `${p.firstName.charAt(0)}. ${p.lastName}` : id;
+  };
+
+  const buildDayHeadlines = (prevSlate: readonly LiveGameSeed[] | null): TickerItem[] => {
+    const items: TickerItem[] = [];
+    if (playoffs) {
+      for (const s of playoffs.series) {
+        if (seriesDecided(s)) {
+          const w = seriesWinner(s)!;
+          items.push({
+            kind: 'news',
+            text: `${teamAbbrOf(w)} take the ${s.label} ${Math.max(s.highWins, s.lowWins)}-${Math.min(s.highWins, s.lowWins)}`,
+          });
+        } else {
+          const text =
+            s.highWins === s.lowWins
+              ? `${s.label}: ${teamAbbrOf(s.highSeed)} vs ${teamAbbrOf(s.lowSeed)}, tied ${s.highWins}-${s.lowWins}`
+              : s.highWins > s.lowWins
+                ? `${s.label}: ${teamAbbrOf(s.highSeed)} lead ${s.highWins}-${s.lowWins}`
+                : `${s.label}: ${teamAbbrOf(s.lowSeed)} lead ${s.lowWins}-${s.highWins}`;
+          items.push({ kind: 'news', text });
+        }
+      }
+    }
+    if (prevSlate) {
+      for (const g of prevSlate) {
+        const f = extractLiveState(g.events, Number.MAX_SAFE_INTEGER);
+        items.push({
+          kind: 'score',
+          text: `${teamAbbrOf(g.entry.awayTeamId)} ${f.scoreAway} @ ${teamAbbrOf(g.entry.homeTeamId)} ${f.scoreHome}`,
+        });
+      }
+    }
+    if (!playoffs && currentDay >= 3) {
+      let leadId: TeamId | null = null;
+      let leadW = -1;
+      let leadL = 0;
+      for (const [id, st] of standings) {
+        if (st.wins > leadW) {
+          leadId = id;
+          leadW = st.wins;
+          leadL = st.losses;
+        }
+      }
+      if (leadId) {
+        items.push({
+          kind: 'news',
+          text: `${teamAbbrOf(leadId)} pace the league at ${leadW}-${leadL}`,
+        });
+      }
+      let hrId: PlayerId | null = null;
+      let hr = 0;
+      for (const line of aggregatesWithLive.batting.values()) {
+        if (line.HR > hr) {
+          hr = line.HR;
+          hrId = line.playerId;
+        }
+      }
+      if (hrId && hr >= 3) {
+        items.push({
+          kind: 'milestone',
+          text: `${playerNameOf(hrId)} leads the league with ${hr} HR`,
+        });
+      }
+    }
+    items.push({
+      kind: 'news',
+      text: playoffs
+        ? `Postseason day ${playoffs.day} — year ${seasonYear}`
+        : `League day ${currentDay} of ${activeSchedule.totalDays} — year ${seasonYear}`,
+    });
+    return items;
+  };
+
+  // Live big-moment scanner: only the active channel's events flow here.
+  let tickerBatterId: PlayerId | null = null;
+  const scanEventsForTicker = (events: readonly SimEvent[]) => {
+    for (const ev of events) {
+      if (ev.kind === 'pitch') tickerBatterId = ev.batterId;
+      else if (ev.kind === 'atBatEnd' && ev.outcome === 'home-run') {
+        const who = tickerBatterId ? playerNameOf(tickerBatterId) : 'Somebody';
+        ticker.pushBreaking(
+          ev.rbis >= 4
+            ? { kind: 'breaking', text: `GRAND SLAM! ${who} clears the bases` }
+            : { kind: 'milestone', text: `${who} goes deep${ev.rbis > 1 ? ` — ${ev.rbis} RBI` : ''}` },
+        );
+      } else if (ev.kind === 'gameEnd') {
+        const g = liveGames[selectedIdx];
+        if (g) {
+          ticker.pushBreaking({
+            kind: 'score',
+            text: `${teamAbbrOf(g.entry.awayTeamId)} ${ev.finalRuns.away} @ ${teamAbbrOf(g.entry.homeTeamId)} ${ev.finalRuns.home}${g.entry.label ? ` — ${g.entry.label}` : ''}`,
+          });
+        }
+      }
+    }
+  };
+
   // Audio dispatcher: stays inert until the user clicks the audio toggle (a
   // user gesture is required to start the AudioContext). Once unlocked it
   // stays enabled; mute is toggled separately on the bus.
@@ -785,7 +902,10 @@ const main = () => {
     autoStart: true,
     getStandings: () => standings,
     getChannelInfo: () => ({ currentIdx: selectedIdx, total: liveGames.length }),
-    onEvents: (events) => sfx.dispatch(events),
+    onEvents: (events) => {
+      sfx.dispatch(events);
+      scanEventsForTicker(events);
+    },
     onAnimCues: (cues) => sfx.dispatchAnim(cues),
     onTick: (dt, events) => {
       const frame = ambience.reducer.step(events, dt);
@@ -800,6 +920,7 @@ const main = () => {
   });
 
   setupAudioToggle(sfx);
+  ticker.setHeadlines(buildDayHeadlines(null));
 
   const onChannelChanged = () => {
     ambience = buildAmbienceFor(liveGames[selectedIdx]!);
@@ -872,6 +993,12 @@ const main = () => {
       ...(playoffs?.champion ? { champion: playoffs.champion } : {}),
       ...(playoffs?.runnerUp ? { runnerUp: playoffs.runnerUp } : {}),
     });
+    if (playoffs?.champion) {
+      ticker.pushBreaking({
+        kind: 'breaking',
+        text: `${teamAbbrOf(playoffs.champion)} WIN THE YEAR ${seasonYear} FINALS!`,
+      });
+    }
     const winter = runOffseason(currentPlayers, league.teams, seasonYear, winterRngFor(seasonYear));
     currentPlayers = winter.players;
     for (const id of winter.retired) retiredEver.add(id);
@@ -883,6 +1010,18 @@ const main = () => {
       playerIndex,
       retiredPlayers: retiredEver,
     });
+    if (winter.retired.length > 0) {
+      ticker.pushBreaking({
+        kind: 'news',
+        text: `Winter: ${winter.retired.length} retirements, ${winter.rookies.length} rookies join the league`,
+      });
+    }
+    for (const h of history.hallOfFame.filter((x) => x.inductedYear === seasonYear).slice(0, 3)) {
+      ticker.pushBreaking({
+        kind: 'milestone',
+        text: `HALL OF FAME: ${playerNameOf(h.playerId)} inducted`,
+      });
+    }
     playoffs = null;
     seasonIdx += 1;
     seasonYear += 1;
@@ -892,6 +1031,7 @@ const main = () => {
     currentDay = 1;
     saveProgress({ v: 2, seasonIdx, day: currentDay });
     goLiveWith(simulateSlateSeeds(regularDayEntries(currentDay)));
+    ticker.setHeadlines(buildDayHeadlines(null));
   };
 
   const startPlayoffDay = (state: PlayoffState) => {
@@ -900,6 +1040,7 @@ const main = () => {
   };
 
   const advanceDay = () => {
+    const prevSlate = liveGameSeeds;
     if (playoffs) {
       // Fold the playoff day that just ended into the bracket.
       playoffs = applyPlayoffResults(playoffs, playoffResultsFrom(liveGameSeeds));
@@ -908,6 +1049,7 @@ const main = () => {
         return;
       }
       startPlayoffDay(playoffs);
+      ticker.setHeadlines(buildDayHeadlines(prevSlate));
       return;
     }
     // Standings count the day that just ended (the agg already includes it),
@@ -916,7 +1058,12 @@ const main = () => {
     if (currentDay >= activeSchedule.totalDays) {
       // Regular season complete — October. Seed from the final standings.
       playoffs = seedPlayoffs(seasonYear, league.teams, playoffSeedEntries(aggregatesWithLive));
+      const cs = playoffs.series
+        .map((x) => `${teamAbbrOf(x.highSeed)} vs ${teamAbbrOf(x.lowSeed)}`)
+        .join(' · ');
+      ticker.pushBreaking({ kind: 'breaking', text: `OCTOBER! Conference Series open: ${cs}` });
       startPlayoffDay(playoffs);
+      ticker.setHeadlines(buildDayHeadlines(prevSlate));
       return;
     }
     currentDay += 1;
@@ -931,6 +1078,7 @@ const main = () => {
       (aggregatesWithLive as unknown as { gamesProcessed: number }).gamesProcessed += 1;
     }
     goLiveWith(seeds);
+    ticker.setHeadlines(buildDayHeadlines(prevSlate));
   };
 
   const directorTick = () => {
