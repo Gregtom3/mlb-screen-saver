@@ -230,6 +230,7 @@ const foldPitcherAtBat = (
   eff: OutcomeEffects,
   outcome: AtBatOutcome,
   runsAllowed: number,
+  earnedRuns: number,
 ): void => {
   line.BF += 1;
   line.H += eff.hits;
@@ -238,7 +239,7 @@ const foldPitcherAtBat = (
   line.HBP += eff.hbp;
   line.SO += eff.strikeouts;
   line.R += runsAllowed;
-  line.ER += runsAllowed;
+  line.ER += earnedRuns;
   line.IPouts += outsAddedFor(outcome);
 };
 
@@ -272,6 +273,11 @@ export const aggregateGame = (
   let abPitcherId: PlayerId | null = null;
   let abRunsScored = 0;
   let abRunnerIds: PlayerId[] = []; // runners credited with R during this AB
+  // Unearned-run bookkeeping: runners who reached base on an error score
+  // unearned runs (simplified reconstruction — runs that score during a
+  // reached-on-error at-bat are also unearned).
+  let abUnearnedRuns = 0;
+  const reachedOnError = new Set<PlayerId>();
   let abContact: { ballPath: { landingX: number; landingY: number; exitVeloMph: number; launchAngleDeg: number } } | null = null;
   // The last pitch's zone in the current AB. Used at atBatEnd to credit
   // the batter's zone-PA cell for xBA-by-zone aggregates.
@@ -410,6 +416,7 @@ export const aggregateGame = (
           abPitcherId = fieldingPitcher;
           abRunsScored = 0;
           abRunnerIds = [];
+          abUnearnedRuns = 0;
           abContact = null;
         }
         break;
@@ -418,6 +425,7 @@ export const aggregateGame = (
         if (ev.from === 1) bases.first = false;
         else if (ev.from === 2) bases.second = false;
         else if (ev.from === 3) bases.third = false;
+        if (ev.out) reachedOnError.delete(ev.runnerId);
         if (!ev.out) {
           if (ev.to === 1) bases.first = true;
           else if (ev.to === 2) bases.second = true;
@@ -425,6 +433,10 @@ export const aggregateGame = (
           else if (ev.to === 0) {
             abRunsScored += 1;
             abRunnerIds.push(ev.runnerId);
+            if (reachedOnError.has(ev.runnerId)) {
+              abUnearnedRuns += 1;
+              reachedOnError.delete(ev.runnerId);
+            }
             if (half === 'top') scoreAway += 1;
             else scoreHome += 1;
             const battingTeam = half === 'top' ? input.away.teamId : input.home.teamId;
@@ -468,9 +480,15 @@ export const aggregateGame = (
         const bLine = getOrCreateBatting(agg, currentBatterId, battingTeam);
         const pLine = getOrCreatePitching(agg, fieldingPitcher, fieldingTeam);
 
+        // Earned runs: every run in a reached-on-error at-bat is unearned;
+        // otherwise only runs by runners who originally reached on an error.
+        const abUnearned =
+          ev.outcome === 'reached-on-error' ? abRunsScored : abUnearnedRuns;
+        const abEarnedRuns = abRunsScored - abUnearned;
+
         // Top-line + per-game.
         foldAtBat(bLine, eff, ev.rbis, 0);
-        foldPitcherAtBat(pLine, eff, ev.outcome, abRunsScored);
+        foldPitcherAtBat(pLine, eff, ev.outcome, abRunsScored, abEarnedRuns);
 
         // Batter-vs-pitcher matchup row. Folds the same per-AB effects
         // into a slim counter line keyed by (batterId, pitcherId). The
@@ -520,12 +538,15 @@ export const aggregateGame = (
         pRow.BB += eff.walks;
         pRow.SO += eff.strikeouts;
         pRow.R += abRunsScored;
-        pRow.ER += abRunsScored;
+        pRow.ER += abEarnedRuns;
 
-        // Credit each run-scoring runner with R++ on top-line + per-game row.
+        // Credit each run-scoring runner with R++ on top-line + per-game row
+        // + their by-month split (runs belong to the runner who scored, in
+        // the month they scored).
         for (const runnerId of abRunnerIds) {
           const runnerLine = getOrCreateBatting(agg, runnerId, battingTeam);
           runnerLine.R += 1;
+          getOrCreateMonthSplit(runnerLine, monthKeyFor(day)).R += 1;
           const runnerRow = ensureBattingRow(
             runnerId,
             battingTeam,
@@ -545,7 +566,7 @@ export const aggregateGame = (
           }
           for (const k of pitchingSplitKeys(batter, !battingTeamIsHome)) {
             const split = getOrCreatePitchingSplit(pLine, k);
-            foldPitcherAtBat(split, eff, ev.outcome, abRunsScored);
+            foldPitcherAtBat(split, eff, ev.outcome, abRunsScored, abEarnedRuns);
           }
         }
 
@@ -633,10 +654,16 @@ export const aggregateGame = (
             ...(note ? { note } : {}),
           });
         }
+        // A batter who reached on an error will score an unearned run if he
+        // comes around — remember him until he scores, is out, or the
+        // inning ends.
+        if (ev.outcome === 'reached-on-error') reachedOnError.add(currentBatterId);
+
         abStartState = null;
         abPitcherId = null;
         abRunsScored = 0;
         abRunnerIds = [];
+        abUnearnedRuns = 0;
         abContact = null;
         abLastZone = null;
         currentBatterId = null;
@@ -647,6 +674,7 @@ export const aggregateGame = (
         bases.second = false;
         bases.third = false;
         outs = 0;
+        reachedOnError.clear();
         if (ev.halfInning === 'top') half = 'bottom';
         else { inning += 1; half = 'top'; }
         // Sample WP at half-inning boundaries too so the curve has texture.
