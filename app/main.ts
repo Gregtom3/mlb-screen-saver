@@ -1,4 +1,4 @@
-import { generateInitialLeague } from '../content/index.js';
+import { FOUNDING_YEAR, generateInitialLeague } from '../content/index.js';
 import {
   applyPlayoffResults,
   buildLineup,
@@ -24,6 +24,7 @@ import {
   type RenderLoopHandle,
   type TeamStanding,
   type SceneContext,
+  type WeatherKind,
 } from '../render/index.js';
 import {
   mountMenu,
@@ -286,6 +287,8 @@ interface SceneCtxExtras {
   readonly seasonAggregates?: SeasonAggregates;
   readonly careerBvp?: ReadonlyMap<PlayerId, ReadonlyMap<PlayerId, BvpLine>>;
   readonly isStarBatter?: (playerId: PlayerId) => boolean;
+  /** Per-game weather, decided here in /app — the renderer just draws it. */
+  readonly weather?: WeatherKind;
 }
 
 const buildSceneCtxFor = (
@@ -305,11 +308,15 @@ const buildSceneCtxFor = (
   // home-color blend so the field reads warm under "the lights".
   const isDay = isDayGameForGameId(input.gameId, stadium.atmosphere.dayGameBias);
   const nightSky = blendColors(homeTeam.colors.primary, SKY_NIGHT_FALLBACK, 0.78);
-  const skyColor = isDay
+  let skyColor = isDay
     ? blendColors(SKY_DAY, homeTeam.colors.primary, 0.18)
     : hashFloat01(`${input.gameId}|dusk`) < 0.18
       ? blendColors(SKY_DUSK, homeTeam.colors.primary, 0.25)
       : nightSky;
+  // Weather mutes the sky toward storm grey; the loop draws the particles.
+  if (extras.weather && extras.weather !== 'clear') {
+    skyColor = blendColors(skyColor, '#5c6672', extras.weather === 'fog' ? 0.5 : 0.35);
+  }
 
   return {
     input,
@@ -319,6 +326,7 @@ const buildSceneCtxFor = (
     grassShade: stadium.atmosphere.grassShade,
     skyColor,
     stadium,
+    ...(extras.weather ? { weather: extras.weather } : {}),
     homeTeamPrimary: homeTeam.colors.primary,
     awayTeamPrimary: awayTeam.colors.primary,
     ...(extras.isStarBatter ? { isStarBatter: extras.isStarBatter } : {}),
@@ -815,6 +823,18 @@ const main = () => {
   // exist, mint a SceneContext per game wired to both. The HUD batter card
   // pulls season AVG/HR/RBI from `aggregatesWithLive` and "vs PITCHER"
   // matchup totals from a combination of that map plus history.careerBvp.
+  // Per-game weather: deterministic from the gameId, with snow reserved for
+  // the late season and October. Cosmetic only — the sim never sees it.
+  const weatherForGame = (gameId: string): WeatherKind => {
+    const r = hashFloat01(`${gameId}|wx`);
+    const seasonFrac = Math.min(1, currentDay / activeSchedule.totalDays);
+    const late = playoffs !== null || seasonFrac > 0.85;
+    if (late && r < 0.08) return 'snow';
+    if (r < 0.2) return 'rain';
+    if (r < 0.27) return 'fog';
+    return 'clear';
+  };
+
   const mintLiveGames = (seeds: readonly LiveGameSeed[]): LiveGame[] =>
     seeds.map((seed) => {
       const stars = buildStarSet({
@@ -826,6 +846,7 @@ const main = () => {
         seasonAggregates: aggregatesWithLive,
         careerBvp: history.careerBvp,
         isStarBatter: (id) => stars.has(id),
+        weather: weatherForGame(seed.entry.gameId),
       });
       return {
         events: seed.events,
@@ -1293,6 +1314,7 @@ const main = () => {
   const menu = mountMenu(document.body, {
     getAggregates: () => aggregatesWithLive,
     getTeamGamesPlayed: () => currentDay,
+    getCalendarYear: () => FOUNDING_YEAR + (seasonYear - 1),
     teams: league.teams,
     playerIndex,
     // Live getter: season rollover swaps in a fresh schedule and the menu

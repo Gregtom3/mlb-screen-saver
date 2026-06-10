@@ -254,6 +254,9 @@ interface SceneContext {
   // by /season/history.ts). Combined with the current season's matchup
   // counts before being surfaced as the BvpStats on the HUD.
   readonly careerBvp?: ReadonlyMap<PlayerId, ReadonlyMap<PlayerId, BvpLine>>;
+  // Per-game weather (decided upstream in /app — no weather logic lives in
+  // the renderer). The loop draws the matching overlay; absent = clear.
+  readonly weather?: import('./weather.js').WeatherKind;
 }
 
 const fielderPositionFor = (

@@ -50,6 +50,8 @@ export interface MenuContext {
   getAggregates(): SeasonAggregates;
   /** Team count of games played, used for qualifier thresholds. */
   getTeamGamesPlayed(): number;
+  /** Current calendar year, for player ages. Defaults to the founding year. */
+  getCalendarYear?(): number;
   readonly teams: readonly Team[];
   readonly playerIndex: ReadonlyMap<string, Player>;
   readonly schedule: Schedule;
