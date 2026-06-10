@@ -57,7 +57,7 @@ export const renderPlayer = (
 
   const bio = document.createElement('div');
   bio.className = 'player-bio';
-  const age = 2026 - player.birthYear;
+  const age = (ctx.getCalendarYear?.() ?? 2026) - player.birthYear;
   const b = agg.batting.get(player.id);
   const p = agg.pitching.get(player.id);
   const hc = b ? battingHotCold(b) : null;

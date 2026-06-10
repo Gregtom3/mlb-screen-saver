@@ -118,7 +118,7 @@ const renderRoster = (
       </thead>
       <tbody>
       ${list.sort((a, b) => a.lastName.localeCompare(b.lastName)).map((p) => {
-        const age = 2026 - p.birthYear;
+        const age = (ctx.getCalendarYear?.() ?? 2026) - p.birthYear;
         if (isPitcher) {
           const pl = agg.pitching.get(p.id);
           return `<tr data-player="${p.id}" class="clickable">

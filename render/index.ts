@@ -2,6 +2,7 @@
 export * from './types.js';
 export { buildScene, type SceneContext } from './scene.js';
 export { drawField } from './field.js';
+export { drawWeather, type WeatherKind } from './weather.js';
 export { drawScene } from './sprites.js';
 export { drawHud } from './hud.js';
 export {

@@ -2,6 +2,7 @@
 // mutates them. Phase 5.5 brings the stats menu (League / Teams / Players /
 // Live / History) plus the procedural portrait + WP + spray-chart helpers.
 export { mountMenu } from './menu.js';
+export { mountTicker, type TickerHandle, type TickerItem } from './ticker.js';
 export type { MenuView, MenuContext, LiveGameSummary, GameMetadata } from './menu-shared.js';
 export { drawPortrait, portraitDataUrl } from './portrait.js';
 export { drawSprayChart } from './spray-chart.js';

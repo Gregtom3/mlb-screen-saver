@@ -14,7 +14,9 @@ import type {
 import type { PRNG } from '../sim/prng.js';
 import { FIRST_NAMES, LAST_NAMES, HOMETOWNS } from './names.js';
 
-const FOUNDING_YEAR = 2026;
+// Calendar year of season 1. Exported so age math stays consistent
+// everywhere (player birthYears are calendar years).
+export const FOUNDING_YEAR = 2026;
 
 interface Slot {
   readonly position: Position;
@@ -396,6 +398,45 @@ export const generateRoster = (rng: PRNG, team: Team): RosterGenerationResult =>
     players.push(player);
   });
   return { players };
+};
+
+// A single replacement player for the offseason draft: same generation
+// pipeline as initial rosters, but with caller-controlled id, position,
+// roster tier, and birth year (rookies arrive young).
+export interface ReplacementSpec {
+  readonly id: string;
+  readonly position: Position;
+  readonly birthYear: number;
+  readonly inMinors: boolean;
+  readonly isStarterPitcher?: boolean;
+}
+
+export const generateReplacementPlayer = (
+  rng: PRNG,
+  team: Team,
+  spec: ReplacementSpec,
+): Player => {
+  const ratings = generateRatings(rng, spec.position, spec.isStarterPitcher ?? false);
+  const { bats, throws } = generateBatsThrows(rng, spec.position);
+  const isPitcher = spec.position === 'P';
+  return {
+    id: spec.id,
+    firstName: rng.pick(FIRST_NAMES),
+    lastName: rng.pick(LAST_NAMES),
+    birthYear: spec.birthYear,
+    hometown: rng.pick(HOMETOWNS),
+    bats,
+    throws,
+    primaryPosition: spec.position,
+    secondaryPositions: pickSecondaryPositions(rng, spec.position),
+    ratings,
+    personality: generatePersonality(rng),
+    teamId: team.id,
+    inMinors: spec.inMinors,
+    heightFt: generateHeightFt(rng, spec.position),
+    ...(isPitcher ? { pitcherTendencies: generatePitcherTendencies(rng, ratings) } : {}),
+    batterZonePrefs: generateBatterZonePrefs(rng, ratings, bats),
+  };
 };
 
 export const generateAllPlayers = (rng: PRNG, teams: readonly Team[]): readonly Player[] => {

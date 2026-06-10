@@ -7,6 +7,7 @@ import { drawScene, findPlayerAtScreen } from './sprites.js';
 import { drawDebugOverlay, isDebugEnabled } from './debug.js';
 import { computeTransform } from './transform.js';
 import { computeAnimAudioCues } from './anim-cues.js';
+import { drawWeather } from './weather.js';
 import type { PlayerId, TeamId } from '../world/types.js';
 import type { CrowdState } from '../ambience/state.js';
 
@@ -225,6 +226,7 @@ export const createRenderLoop = (
       playerIndex: game.sceneCtx.input.playerIndex,
       hoveredPlayerId,
     });
+    if (game.sceneCtx.weather) drawWeather(ctx, game.sceneCtx.weather, scene.simTime);
     const standings = options.getStandings?.();
     const channel = options.getChannelInfo?.();
     drawHud(
