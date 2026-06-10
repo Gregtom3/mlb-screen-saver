@@ -3,6 +3,27 @@ export * from './types.js';
 export { buildSchedule } from './schedule.js';
 export { buildLineup } from './lineup.js';
 export {
+  applyPlayoffResults,
+  homeTeamForGame,
+  playoffGamesForDay,
+  seedPlayoffs,
+  seriesDecided,
+  seriesWinner,
+  type PlayoffGameEntry,
+  type PlayoffGameResult,
+  type PlayoffRound,
+  type PlayoffSeedEntry,
+  type PlayoffSeries,
+  type PlayoffState,
+} from './playoffs.js';
+export {
+  agePlayerRatings,
+  playerAgeInSeason,
+  retirementProbability,
+  runOffseason,
+  type OffseasonResult,
+} from './offseason.js';
+export {
   type LeagueHistory,
   type SeasonRecord,
   type CareerBattingLine,

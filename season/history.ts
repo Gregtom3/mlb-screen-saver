@@ -200,16 +200,18 @@ export const summarizeSeason = (
   teams: readonly Team[],
   teamGames: number,
   playerIndex: ReadonlyMap<PlayerId, Player>,
+  postseason?: { champion?: TeamId; runnerUp?: TeamId },
 ): SeasonRecord => {
   void teams;
-  // Final standings: sort by wins desc, run diff as tiebreaker. No playoffs
-  // yet — champion is the regular-season win leader.
+  // Final standings: sort by wins desc, run diff as tiebreaker. The playoff
+  // result wins when provided; otherwise the regular-season win leader is
+  // the champion (pre-playoffs seasons).
   const standings = [...agg.teams.values()].sort((a, b) => {
     if (b.W !== a.W) return b.W - a.W;
     return runDiff(b) - runDiff(a);
   });
-  const champion = standings[0]?.teamId ?? '';
-  const runnerUp = standings[1]?.teamId ?? champion;
+  const champion = postseason?.champion ?? standings[0]?.teamId ?? '';
+  const runnerUp = postseason?.runnerUp ?? standings[1]?.teamId ?? champion;
 
   const mvp = mvpRanking(agg.batting, playerIndex, teamGames)[0]?.playerId ?? null;
   const cy = cyYoungRanking(agg.pitching, playerIndex, teamGames)[0]?.playerId ?? null;
@@ -400,7 +402,14 @@ const buildSingleSeasonRecords = (
 };
 
 export interface BuildHistoryInput {
-  readonly seasons: readonly { year: number; agg: SeasonAggregates; teamGames: number }[];
+  readonly seasons: readonly {
+    year: number;
+    agg: SeasonAggregates;
+    teamGames: number;
+    /** Postseason result. Absent = no playoffs ran; the win leader is champ. */
+    champion?: TeamId;
+    runnerUp?: TeamId;
+  }[];
   readonly teams: readonly Team[];
   readonly playerIndex: ReadonlyMap<PlayerId, Player>;
   /**
@@ -418,7 +427,12 @@ export const buildLeagueHistory = (input: BuildHistoryInput): LeagueHistory => {
   const careerBvp = new Map<PlayerId, Map<PlayerId, BvpLine>>();
 
   for (const s of input.seasons) {
-    seasons.push(summarizeSeason(s.year, s.agg, input.teams, s.teamGames, input.playerIndex));
+    seasons.push(
+      summarizeSeason(s.year, s.agg, input.teams, s.teamGames, input.playerIndex, {
+        ...(s.champion ? { champion: s.champion } : {}),
+        ...(s.runnerUp ? { runnerUp: s.runnerUp } : {}),
+      }),
+    );
     accumulateCareerBatting(careerBatting, s.agg, s.year);
     accumulateCareerPitching(careerPitching, s.agg, s.year);
     accumulateCareerBvp(careerBvp, s.agg);
