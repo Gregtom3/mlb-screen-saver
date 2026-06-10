@@ -1,9 +1,19 @@
 import { generateInitialLeague } from '../content/index.js';
-import { buildSchedule, buildLineup } from '../season/index.js';
+import {
+  applyPlayoffResults,
+  buildLineup,
+  buildSchedule,
+  playoffGamesForDay,
+  runOffseason,
+  seedPlayoffs,
+  type PlayoffGameEntry,
+  type PlayoffSeedEntry,
+  type PlayoffState,
+} from '../season/index.js';
 import { buildLeagueHistory, type LeagueHistory } from '../season/history.js';
-import { runGame } from '../sim/index.js';
+import { createPRNG, runGame } from '../sim/index.js';
 import type { GameInput, SideInput, SimEvent } from '../sim/types.js';
-import type { Player, PlayerId, Stadium, Team, TeamId } from '../world/types.js';
+import type { CoachingStaff, Player, PlayerId, Stadium, Team, TeamId } from '../world/types.js';
 import type { BvpLine } from '../stats/types.js';
 import {
   createRenderLoop,
@@ -69,9 +79,12 @@ function parseSeed(s: string): number {
 // to where the viewer left off — completed seasons and all. Keyed by seed so
 // different leagues keep independent saves.
 interface SavedProgress {
-  readonly v: 1;
+  readonly v: 2;
   readonly seasonIdx: number;
+  /** Regular-season day in progress (== totalDays while in the playoffs). */
   readonly day: number;
+  /** 1-based postseason day in progress; absent during the regular season. */
+  readonly playoffDay?: number;
 }
 
 const SAVE_KEY = `8bb:progress:${SEED.toString(16)}`;
@@ -80,11 +93,24 @@ const loadProgress = (): SavedProgress | null => {
   try {
     const raw = globalThis.localStorage?.getItem(SAVE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<SavedProgress>;
-    if (parsed.v !== 1) return null;
+    const parsed = JSON.parse(raw) as {
+      v?: number;
+      seasonIdx?: number;
+      day?: number;
+      playoffDay?: number;
+    };
+    // v1 saves (pre-playoffs) are forward-compatible: no playoffDay field.
+    if (parsed.v !== 1 && parsed.v !== 2) return null;
     if (typeof parsed.seasonIdx !== 'number' || typeof parsed.day !== 'number') return null;
     if (parsed.seasonIdx < 0 || parsed.day < 1) return null;
-    return { v: 1, seasonIdx: parsed.seasonIdx, day: parsed.day };
+    return {
+      v: 2,
+      seasonIdx: parsed.seasonIdx,
+      day: parsed.day,
+      ...(typeof parsed.playoffDay === 'number' && parsed.playoffDay >= 1
+        ? { playoffDay: parsed.playoffDay }
+        : {}),
+    };
   } catch {
     return null;
   }
@@ -187,27 +213,43 @@ const sizeCanvas = (canvas: HTMLCanvasElement) => {
 };
 
 interface LiveGame extends ActiveGame {
-  readonly entry: { gameId: string; homeTeamId: TeamId; awayTeamId: TeamId };
+  readonly entry: {
+    readonly gameId: string;
+    readonly homeTeamId: TeamId;
+    readonly awayTeamId: TeamId;
+    /** Postseason tag, e.g. 'East CS G3'. Absent in the regular season. */
+    readonly label?: string;
+    readonly seriesId?: string;
+  };
+}
+
+interface GameInputOpts {
+  /** Player pool to draw lineups from. Defaults to the founding rosters. */
+  readonly players?: readonly Player[];
+  /** Per-team coaching-staff override (the /director nudge hook). */
+  readonly staffFor?: (team: Team) => CoachingStaff;
 }
 
 const buildGameInput = (
   league: ReturnType<typeof generateInitialLeague>,
   entry: { gameId: string; homeTeamId: TeamId; awayTeamId: TeamId; stadiumId: string; day: number },
   seed: number,
+  opts: GameInputOpts = {},
 ): { input: GameInput; home: Team; away: Team; stadium: Stadium } => {
+  const players = opts.players ?? league.players;
   const home = league.teams.find((t) => t.id === entry.homeTeamId)!;
   const away = league.teams.find((t) => t.id === entry.awayTeamId)!;
   const stadium = league.stadiums.find((s) => s.id === entry.stadiumId)!;
-  const homeLineup = buildLineup(home, league.players, entry.day);
-  const awayLineup = buildLineup(away, league.players, entry.day);
-  const playerIndex = new Map(league.players.map((p) => [p.id, p]));
+  const homeLineup = buildLineup(home, players, entry.day);
+  const awayLineup = buildLineup(away, players, entry.day);
+  const playerIndex = new Map(players.map((p) => [p.id, p]));
   const homeSide: SideInput = {
     teamId: home.id,
     battingOrder: homeLineup.battingOrder,
     startingPitcherId: homeLineup.startingPitcher,
     bullpen: homeLineup.bullpen,
     defenseByPosition: homeLineup.defenseByPosition,
-    coachingStaff: home.coachingStaff,
+    coachingStaff: opts.staffFor?.(home) ?? home.coachingStaff,
   };
   const awaySide: SideInput = {
     teamId: away.id,
@@ -215,7 +257,7 @@ const buildGameInput = (
     startingPitcherId: awayLineup.startingPitcher,
     bullpen: awayLineup.bullpen,
     defenseByPosition: awayLineup.defenseByPosition,
-    coachingStaff: away.coachingStaff,
+    coachingStaff: opts.staffFor?.(away) ?? away.coachingStaff,
   };
   const input: GameInput = {
     gameId: entry.gameId,
@@ -357,7 +399,13 @@ const main = () => {
   // History view. Each prior season uses a distinct seed offset so outcomes
   // differ year-over-year. The league roster itself doesn't age across
   // seasons yet — that lands when retirement/draft logic does.
-  const priorSummaries: { year: number; agg: SeasonAggregates; teamGames: number }[] = [];
+  const priorSummaries: {
+    year: number;
+    agg: SeasonAggregates;
+    teamGames: number;
+    champion?: TeamId;
+    runnerUp?: TeamId;
+  }[] = [];
   const gameMetadata = new Map<string, GameMetadata>();
   const PRIOR_SEASON_GOLDEN_RATIO = 0x9e_37_79_b9;
 
@@ -372,6 +420,40 @@ const main = () => {
   let seasonYear = league.season.year + seasonIdx;
   let activeSchedule = seasonIdx === 0 ? schedule : buildSchedule(league.teams, seasonYear);
   let currentDay = Math.max(1, Math.min(saved?.day ?? LIVE_DAY, activeSchedule.totalDays));
+  const resumePlayoffDay = saved?.playoffDay ?? null;
+  if (resumePlayoffDay !== null) currentDay = activeSchedule.totalDays;
+  let playoffs: PlayoffState | null = null;
+
+  // ---- Roster evolution state. `currentPlayers` is this season's pool;
+  // `playerIndex` accumulates everyone who has ever played (the menus and
+  // career history need retired players too); `retiredEver` grows each
+  // winter and gates Hall of Fame induction.
+  let currentPlayers: readonly Player[] = league.players;
+  const playerIndex = new Map<PlayerId, Player>(league.players.map((p) => [p.id, p]));
+  const retiredEver = new Set<PlayerId>();
+  const buildTeamPlayersById = (pool: readonly Player[]): Map<TeamId, Player[]> => {
+    const byTeam = new Map<TeamId, Player[]>();
+    for (const p of pool) {
+      if (p.teamId === null) continue;
+      const list = byTeam.get(p.teamId) ?? [];
+      list.push(p);
+      byTeam.set(p.teamId, list);
+    }
+    return byTeam;
+  };
+
+  // The winter PRNG recipe — shared by the live rollover and the resume
+  // replay so roster evolution is identical in both.
+  const winterRngFor = (completedSeasonYear: number) =>
+    createPRNG(SEED).fork(`winter:${completedSeasonYear}`);
+
+  // Convert final team lines into playoff seeding entries.
+  const playoffSeedEntries = (agg: SeasonAggregates): PlayoffSeedEntry[] =>
+    [...agg.teams.values()].map((t) => ({
+      teamId: t.teamId,
+      wins: t.W,
+      runDiff: t.RS - t.RA,
+    }));
 
   for (let i = 0; i < PRIOR_SEASONS; i++) {
     const priorYear = league.season.year - PRIOR_SEASONS + i;
@@ -392,8 +474,9 @@ const main = () => {
   }
 
   // ---- Deterministically replay seasons completed in previous sessions so
-  // the History view resumes where the viewer left off. Same schedules, same
-  // seeds, same outcomes as when they originally played out on screen.
+  // the world resumes where the viewer left off: same schedules, seeds and
+  // outcomes, the same playoff brackets, and the same winters (aging,
+  // retirements, rookie drafts) evolving `currentPlayers` season by season.
   for (let i = 0; i < seasonIdx; i++) {
     const y = league.season.year + i;
     const sched = i === 0 ? schedule : buildSchedule(league.teams, y);
@@ -401,23 +484,53 @@ const main = () => {
     const games: FinishedGame[] = [];
     for (let day = 1; day <= sched.totalDays; day++) {
       for (const entry of sched.entries.filter((e) => e.day === day)) {
-        const { input } = buildGameInput(league, entry, seedI);
+        const { input } = buildGameInput(league, entry, seedI, { players: currentPlayers });
         games.push({ events: runGame(input), input, day });
       }
     }
+    const agg = buildSeasonAggregates(games, league.teams, currentPlayers, y);
+
+    // Replay the postseason to its champion.
+    let bracket = seedPlayoffs(y, league.teams, playoffSeedEntries(agg));
+    while (!bracket.champion) {
+      const slate = playoffGamesForDay(bracket, league.teams);
+      const results = slate.map((g) => {
+        const { input } = buildGameInput(league, g, seedI, { players: currentPlayers });
+        const events = runGame(input);
+        const final = extractLiveState(events, Number.MAX_SAFE_INTEGER);
+        return {
+          seriesId: g.seriesId,
+          winner: final.scoreHome > final.scoreAway ? g.homeTeamId : g.awayTeamId,
+        };
+      });
+      bracket = applyPlayoffResults(bracket, results);
+    }
     priorSummaries.push({
       year: y,
-      agg: buildSeasonAggregates(games, league.teams, league.players, y),
+      agg,
       teamGames: sched.totalDays,
+      ...(bracket.champion ? { champion: bracket.champion } : {}),
+      ...(bracket.runnerUp ? { runnerUp: bracket.runnerUp } : {}),
     });
+
+    // The winter between seasons, exactly as it ran live.
+    const winter = runOffseason(currentPlayers, league.teams, y, winterRngFor(y));
+    currentPlayers = winter.players;
+    for (const id of winter.retired) retiredEver.add(id);
+    for (const r of winter.rookies) playerIndex.set(r.id, r);
   }
 
   // ---- Pre-simulate current-season history days. Stash events for /stats so
   // the menu has full season context (PA/PA splits, hit charts, WP timelines).
   const historyGames: FinishedGame[] = [];
-  for (let day = 1; day < currentDay; day++) {
+  // Resuming mid-playoffs means the whole regular season is in the books.
+  const lastHistoryDay =
+    resumePlayoffDay !== null ? activeSchedule.totalDays : currentDay - 1;
+  for (let day = 1; day <= lastHistoryDay; day++) {
     for (const entry of activeSchedule.entries.filter((e) => e.day === day)) {
-      const { input } = buildGameInput(league, entry, seasonSeedFor(seasonIdx));
+      const { input } = buildGameInput(league, entry, seasonSeedFor(seasonIdx), {
+        players: currentPlayers,
+      });
       const events = runGame(input);
       historyGames.push({ events, input, day });
       gameMetadata.set(entry.gameId, {
@@ -433,7 +546,7 @@ const main = () => {
   const aggregates: SeasonAggregates = buildSeasonAggregates(
     historyGames,
     league.teams,
-    league.players,
+    currentPlayers,
     seasonYear,
   );
   // Convert TeamLine → TeamStanding for the existing HUD strip.
@@ -447,8 +560,25 @@ const main = () => {
   // the live day finishes, the next day is simulated and put on the air; when
   // the schedule runs out, the finished season is banked into history and a
   // fresh one begins. All of this is driven from the render loop's onTick.
+  interface SlateEntry {
+    readonly gameId: string;
+    readonly day: number;
+    readonly homeTeamId: TeamId;
+    readonly awayTeamId: TeamId;
+    readonly stadiumId: string;
+    /** HUD tag for postseason games, e.g. 'East CS G3'. */
+    readonly label?: string;
+    readonly seriesId?: string;
+  }
+
   interface LiveGameSeed {
-    readonly entry: { gameId: string; homeTeamId: TeamId; awayTeamId: TeamId };
+    readonly entry: {
+      gameId: string;
+      homeTeamId: TeamId;
+      awayTeamId: TeamId;
+      label?: string;
+      seriesId?: string;
+    };
     readonly input: GameInput;
     readonly home: Team;
     readonly away: Team;
@@ -456,45 +586,90 @@ const main = () => {
     readonly events: readonly SimEvent[];
   }
 
-  // Simulate one day's slate and register its metadata for the menus.
-  const simulateDaySeeds = (day: number): LiveGameSeed[] =>
-    activeSchedule.entries
-      .filter((e) => e.day === day)
-      .map((entry) => {
-        const { input, home, away, stadium } = buildGameInput(
-          league,
-          entry,
-          seasonSeedFor(seasonIdx),
-        );
-        const events = runGame(input);
-        gameMetadata.set(entry.gameId, {
+  const regularDayEntries = (day: number): SlateEntry[] =>
+    activeSchedule.entries.filter((e) => e.day === day);
+
+  // Postseason slates rotate lineups past the end of the schedule and carry
+  // a series tag for the HUD/ticker.
+  const playoffSlateEntries = (state: PlayoffState): SlateEntry[] =>
+    playoffGamesForDay(state, league.teams).map((g: PlayoffGameEntry) => ({
+      gameId: g.gameId,
+      day: activeSchedule.totalDays + state.day,
+      homeTeamId: g.homeTeamId,
+      awayTeamId: g.awayTeamId,
+      stadiumId: g.stadiumId,
+      label: `${g.seriesLabel} G${g.gameNumber}`,
+      seriesId: g.seriesId,
+    }));
+
+  // Simulate one slate (regular or postseason) and register its metadata.
+  const simulateSlateSeeds = (entries: readonly SlateEntry[]): LiveGameSeed[] =>
+    entries.map((entry) => {
+      const { input, home, away, stadium } = buildGameInput(
+        league,
+        entry,
+        seasonSeedFor(seasonIdx),
+        { players: currentPlayers },
+      );
+      const events = runGame(input);
+      gameMetadata.set(entry.gameId, {
+        gameId: entry.gameId,
+        day: entry.day,
+        homeTeamId: entry.homeTeamId,
+        awayTeamId: entry.awayTeamId,
+        homeStartingPitcher: input.home.startingPitcherId,
+        awayStartingPitcher: input.away.startingPitcherId,
+      });
+      return {
+        entry: {
           gameId: entry.gameId,
-          day: entry.day,
           homeTeamId: entry.homeTeamId,
           awayTeamId: entry.awayTeamId,
-          homeStartingPitcher: input.home.startingPitcherId,
-          awayStartingPitcher: input.away.startingPitcherId,
-        });
+          ...(entry.label ? { label: entry.label } : {}),
+          ...(entry.seriesId ? { seriesId: entry.seriesId } : {}),
+        },
+        input,
+        home,
+        away,
+        stadium,
+        events,
+      };
+    });
+
+  // Winner extraction for bracket updates: read the final score out of a
+  // finished event log.
+  const playoffResultsFrom = (
+    seeds: readonly LiveGameSeed[],
+  ): { seriesId: string; winner: TeamId }[] =>
+    seeds
+      .filter((s) => s.entry.seriesId)
+      .map((s) => {
+        const final = extractLiveState(s.events, Number.MAX_SAFE_INTEGER);
         return {
-          entry: {
-            gameId: entry.gameId,
-            homeTeamId: entry.homeTeamId,
-            awayTeamId: entry.awayTeamId,
-          },
-          input,
-          home,
-          away,
-          stadium,
-          events,
+          seriesId: s.entry.seriesId!,
+          winner:
+            final.scoreHome > final.scoreAway ? s.entry.homeTeamId : s.entry.awayTeamId,
         };
       });
+
+  // ---- Resume mid-postseason: re-seed the bracket from the completed
+  // regular season and replay playoff days already watched.
+  if (resumePlayoffDay !== null) {
+    playoffs = seedPlayoffs(seasonYear, league.teams, playoffSeedEntries(aggregates));
+    while (playoffs.day < resumePlayoffDay && !playoffs.champion) {
+      const seeds = simulateSlateSeeds(playoffSlateEntries(playoffs));
+      playoffs = applyPlayoffResults(playoffs, playoffResultsFrom(seeds));
+    }
+  }
 
   // Two-phase build: simulate every live game first (we need their finished
   // events to roll into aggregatesWithLive + careerBvp), then build per-game
   // SceneContexts once those aggregates exist. The render loop's batter card
   // reads season AVG/HR/RBI and BvP off SceneContext, so the context
   // wouldn't be useful built earlier.
-  let liveGameSeeds: LiveGameSeed[] = simulateDaySeeds(currentDay);
+  let liveGameSeeds: LiveGameSeed[] = simulateSlateSeeds(
+    playoffs ? playoffSlateEntries(playoffs) : regularDayEntries(currentDay),
+  );
   if (liveGameSeeds.length === 0) {
     console.error(`No games on day ${currentDay}`);
     return;
@@ -505,15 +680,20 @@ const main = () => {
   // same object incrementally (aggregateGame mutates in place).
   const aggCtx: AggregatorContext = {
     teamsById: new Map(league.teams.map((t) => [t.id, t])),
-    playerIndex: new Map(league.players.map((p) => [p.id, p])),
+    // Shared with the growing all-time index so winter rookies resolve too.
+    playerIndex,
   };
+  // Postseason games deliberately stay out of the season aggregates —
+  // leaderboards and qualifiers are regular-season stats.
   let aggregatesWithLive = buildSeasonAggregates(
     [
       ...historyGames,
-      ...liveGameSeeds.map((g) => ({ events: g.events, input: g.input, day: currentDay })),
+      ...(playoffs
+        ? []
+        : liveGameSeeds.map((g) => ({ events: g.events, input: g.input, day: currentDay }))),
     ],
     league.teams,
-    league.players,
+    currentPlayers,
     seasonYear,
   );
   // The aggregates carry everything the menus need — free the raw history
@@ -524,25 +704,18 @@ const main = () => {
   // can carry the careerBvp map for the HUD batter card. The retired-set
   // stays empty until aging/retirement ships; HoF trips automatically once
   // it's populated.
-  const playerIndex = new Map<PlayerId, Player>(league.players.map((p) => [p.id, p]));
   const stadiumIndex = new Map(league.stadiums.map((s) => [s.id, s]));
   let history: LeagueHistory = buildLeagueHistory({
     seasons: priorSummaries,
     teams: league.teams,
     playerIndex,
-    retiredPlayers: new Set(),
+    retiredPlayers: retiredEver,
   });
 
   // Per-team player rosters — used by buildStarSet for the home/away player
-  // pools. Built once before liveGames so the SceneContext for each channel
-  // can carry an `isStarBatter` predicate (drives walk-up jingle intensity).
-  const teamPlayersById = new Map<TeamId, Player[]>();
-  for (const p of league.players) {
-    if (p.teamId === null) continue;
-    const list = teamPlayersById.get(p.teamId) ?? [];
-    list.push(p);
-    teamPlayersById.set(p.teamId, list);
-  }
+  // pools. Rebuilt every winter (rosters evolve) so the SceneContext's
+  // `isStarBatter` predicate tracks the current season's players.
+  let teamPlayersById = buildTeamPlayersById(currentPlayers);
 
   // Phase 2 of the live-game build: now that aggregatesWithLive and history
   // exist, mint a SceneContext per game wired to both. The HUD batter card
@@ -576,7 +749,8 @@ const main = () => {
     const home = league.teams.find((t) => t.id === g.entry.homeTeamId);
     const away = league.teams.find((t) => t.id === g.entry.awayTeamId);
     const yearTag = seasonIdx > 0 ? `  ·  year ${seasonYear}` : '';
-    return `ch ${selectedIdx + 1}/${liveGames.length}  ·  ${away?.abbr} @ ${home?.abbr}  ·  day ${currentDay}${yearTag}`;
+    const dayTag = g.entry.label ?? `day ${currentDay}`;
+    return `ch ${selectedIdx + 1}/${liveGames.length}  ·  ${away?.abbr} @ ${home?.abbr}  ·  ${dayTag}${yearTag}`;
   };
 
   // Audio dispatcher: stays inert until the user clicks the audio toggle (a
@@ -676,42 +850,9 @@ const main = () => {
   // Bank the finished season into the History view and start a fresh one.
   // Rosters carry over unchanged (aging/retirement is future work) but the
   // schedule, seed, aggregates, and standings all reset for the new year.
-  const rolloverSeason = () => {
-    priorSummaries.push({
-      year: seasonYear,
-      agg: aggregatesWithLive,
-      teamGames: activeSchedule.totalDays,
-    });
-    history = buildLeagueHistory({
-      seasons: priorSummaries,
-      teams: league.teams,
-      playerIndex,
-      retiredPlayers: new Set(),
-    });
-    seasonIdx += 1;
-    seasonYear += 1;
-    activeSchedule = buildSchedule(league.teams, seasonYear);
-    aggregatesWithLive = buildSeasonAggregates([], league.teams, league.players, seasonYear);
-    for (const team of league.teams) standings.set(team.id, { wins: 0, losses: 0 });
-    currentDay = 0; // advanceDay bumps to 1
-  };
-
-  const advanceDay = () => {
-    // Standings count the day that just ended (the agg already includes it),
-    // but never the new day's pre-simulated finals — no spoilers on the strip.
-    refreshStandings();
-    if (currentDay >= activeSchedule.totalDays) rolloverSeason();
-    currentDay += 1;
-    saveProgress({ v: 1, seasonIdx, day: currentDay });
-    liveGameSeeds = simulateDaySeeds(currentDay);
-    for (const seed of liveGameSeeds) {
-      aggregateGame(
-        { events: seed.events, input: seed.input, day: currentDay },
-        aggregatesWithLive,
-        aggCtx,
-      );
-      (aggregatesWithLive as unknown as { gamesProcessed: number }).gamesProcessed += 1;
-    }
+  // Put a freshly simulated slate on the air at simTime 0.
+  const goLiveWith = (seeds: LiveGameSeed[]) => {
+    liveGameSeeds = seeds;
     liveGames = mintLiveGames(liveGameSeeds);
     selectedIdx = Math.min(selectedIdx, liveGames.length - 1);
     projectionsCache = null;
@@ -719,6 +860,77 @@ const main = () => {
     handle.jumpTo(0);
     onChannelChanged();
     refreshChannelLabel();
+  };
+
+  // Bank the finished season (with its playoff champion), run the winter —
+  // aging, retirements, the rookie draft — and start a fresh year.
+  const rolloverSeason = () => {
+    priorSummaries.push({
+      year: seasonYear,
+      agg: aggregatesWithLive,
+      teamGames: activeSchedule.totalDays,
+      ...(playoffs?.champion ? { champion: playoffs.champion } : {}),
+      ...(playoffs?.runnerUp ? { runnerUp: playoffs.runnerUp } : {}),
+    });
+    const winter = runOffseason(currentPlayers, league.teams, seasonYear, winterRngFor(seasonYear));
+    currentPlayers = winter.players;
+    for (const id of winter.retired) retiredEver.add(id);
+    for (const r of winter.rookies) playerIndex.set(r.id, r);
+    teamPlayersById = buildTeamPlayersById(currentPlayers);
+    history = buildLeagueHistory({
+      seasons: priorSummaries,
+      teams: league.teams,
+      playerIndex,
+      retiredPlayers: retiredEver,
+    });
+    playoffs = null;
+    seasonIdx += 1;
+    seasonYear += 1;
+    activeSchedule = buildSchedule(league.teams, seasonYear);
+    aggregatesWithLive = buildSeasonAggregates([], league.teams, currentPlayers, seasonYear);
+    for (const team of league.teams) standings.set(team.id, { wins: 0, losses: 0 });
+    currentDay = 1;
+    saveProgress({ v: 2, seasonIdx, day: currentDay });
+    goLiveWith(simulateSlateSeeds(regularDayEntries(currentDay)));
+  };
+
+  const startPlayoffDay = (state: PlayoffState) => {
+    saveProgress({ v: 2, seasonIdx, day: currentDay, playoffDay: state.day });
+    goLiveWith(simulateSlateSeeds(playoffSlateEntries(state)));
+  };
+
+  const advanceDay = () => {
+    if (playoffs) {
+      // Fold the playoff day that just ended into the bracket.
+      playoffs = applyPlayoffResults(playoffs, playoffResultsFrom(liveGameSeeds));
+      if (playoffs.champion) {
+        rolloverSeason();
+        return;
+      }
+      startPlayoffDay(playoffs);
+      return;
+    }
+    // Standings count the day that just ended (the agg already includes it),
+    // but never the new day's pre-simulated finals — no spoilers on the strip.
+    refreshStandings();
+    if (currentDay >= activeSchedule.totalDays) {
+      // Regular season complete — October. Seed from the final standings.
+      playoffs = seedPlayoffs(seasonYear, league.teams, playoffSeedEntries(aggregatesWithLive));
+      startPlayoffDay(playoffs);
+      return;
+    }
+    currentDay += 1;
+    saveProgress({ v: 2, seasonIdx, day: currentDay });
+    const seeds = simulateSlateSeeds(regularDayEntries(currentDay));
+    for (const seed of seeds) {
+      aggregateGame(
+        { events: seed.events, input: seed.input, day: currentDay },
+        aggregatesWithLive,
+        aggCtx,
+      );
+      (aggregatesWithLive as unknown as { gamesProcessed: number }).gamesProcessed += 1;
+    }
+    goLiveWith(seeds);
   };
 
   const directorTick = () => {
