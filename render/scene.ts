@@ -90,6 +90,21 @@ const SWING_RESET_TICKS = 8;
 // is caught until it's caught). Capped short of the bag so a retired batter
 // never visually "arrives safe".
 const BATTER_RUN_OUT_CAP = 0.85;
+// Between-pitch baserunning theater pacing — mirrors the sim's event gaps
+// (TIME_PICKOFF_THROW / TIME_ERRANT_DEFLECT / TIME_BACKUP_THROW / TIME_TAG /
+// TIME_STEAL_RACE in sim/baserunning.ts) so arcs land exactly when the
+// follow-up events fire.
+const PICKOFF_FLIGHT_TICKS = 4;
+const ERRANT_FLIGHT_TICKS = 8;
+const BACKUP_RETRIEVE_TICKS = 14;
+const RELAY_FLIGHT_TICKS = 4;
+const STEAL_RACE_TICKS = 14;
+// Pickoff dive-back: collapse the lead to the bag, hug it, ease back out.
+const DIVE_IN_TICKS = 3;
+const DIVE_HUG_TICKS = 12;
+const DIVE_EASE_OUT_TICKS = 8;
+// Defensive-shift ramp: ease from the previous batter's alignment.
+const SHIFT_RAMP_TICKS = 20;
 // On-deck batter pacing during the gap between at-bats. The 25-tick gap
 // between atBatEnd and the next pitch breaks down as: a settle window
 // (previous play finishes, walk-up jingle leads in), then a slow walk
@@ -316,6 +331,7 @@ const computeRunnerRender = (
   runnerId: PlayerId,
   battingDugout: FieldPoint,
   lead: RunnerLead | undefined,
+  pickoffDiveT?: number,
 ): RunnerRender => {
   const path = basePath(latest.from, latest.to);
   const segmentLen = latest.perBaseTicks;
@@ -359,7 +375,24 @@ const computeRunnerRender = (
   // base (1/2/3) and we have a fresh `lead` event for them. Skip if no
   // lead is known — falls back to standing on the bag.
   if (lead && (latest.to === 1 || latest.to === 2 || latest.to === 3)) {
-    return { runnerId, position: applyLead(arrivedAt, lead, runnerId, simTime), stillVisible: true };
+    const leadPos = applyLead(arrivedAt, lead, runnerId, simTime);
+    // Pickoff move in progress: dive back to the bag, hug it while the
+    // throw comes over, then ease back out to the lead.
+    if (pickoffDiveT !== undefined && simTime >= pickoffDiveT) {
+      const since = simTime - pickoffDiveT;
+      let leadFrac = 1;
+      if (since < DIVE_IN_TICKS) leadFrac = 1 - since / DIVE_IN_TICKS;
+      else if (since < DIVE_IN_TICKS + DIVE_HUG_TICKS) leadFrac = 0;
+      else if (since < DIVE_IN_TICKS + DIVE_HUG_TICKS + DIVE_EASE_OUT_TICKS) {
+        leadFrac = (since - DIVE_IN_TICKS - DIVE_HUG_TICKS) / DIVE_EASE_OUT_TICKS;
+      }
+      return {
+        runnerId,
+        position: lerpPoint(arrivedAt, leadPos, leadFrac),
+        stillVisible: true,
+      };
+    }
+    return { runnerId, position: leadPos, stillVisible: true };
   }
   return { runnerId, position: arrivedAt, stillVisible: true };
 };
@@ -558,6 +591,41 @@ export const buildScene = (
   // First pitch t of the at-bat in progress — used to tell whether the most
   // recent contact belongs to THIS at-bat (drives the batter run-out).
   let currentAbFirstPitchT: number | null = null;
+  // Batter of the PREVIOUS at-bat — the defensive shift eases from the old
+  // batter's alignment to the new one over the first pitches of an at-bat.
+  let prevBatterForShift: PlayerId | null = null;
+  // ---- Between-pitch baserunning theater (steals / pickoffs) -------------
+  // Re-times a follow-up `baserunner` event so the runner visually breaks
+  // when the sim said they broke (stealAttempt / errantThrow), not at the
+  // arrival tick.
+  const pendingRunStarts = new Map<PlayerId, { startT: number; perBaseTicks: number }>();
+  // Most recent pickoff move per runner — drives the dive back to the bag.
+  const pickoffDives = new Map<PlayerId, number>();
+  // Last pickoff target — an errant throw turns him into a breaking runner.
+  let lastPickoffMove: { runnerId: PlayerId; base: 1 | 2 | 3 } | null = null;
+  // Runners sprinting NOW whose outcome event is still in the future (steal
+  // breaks, errant-throw advances). Rendered mid-run until the follow-up
+  // baserunner event takes over with the same startT, seamlessly.
+  const breakingRunners = new Map<
+    PlayerId,
+    { t: number; from: 0 | 1 | 2 | 3; to: 0 | 1 | 2 | 3; perBaseTicks: number }
+  >();
+  // Ball throws between pitches: pickoffs, steal throws, backup relays.
+  let interThrows: {
+    startT: number;
+    endT: number;
+    from: FieldPoint;
+    to: FieldPoint;
+    holdAfter: number;
+  }[] = [];
+  // Backup outfielder chasing an errant pickoff throw.
+  let backupRun: {
+    fielderId: PlayerId;
+    landing: FieldPoint;
+    startT: number;
+    pickupT: number;
+    returnT: number;
+  } | null = null;
   // Most recent inningEnd event, captured at the moment we apply it, plus
   // the fielding side that was on the field BEFORE the half flipped. The
   // walk-on phase reads this to know who's heading back to the dugout
@@ -594,8 +662,18 @@ export const buildScene = (
         // New batter? Reset the "ran-out" flag so the next at-bat-end
         // triggers an outgoing-walk only if this batter never reaches base.
         const isNewBatter = ev.batterId !== currentBatterId;
-        if (isNewBatter) currentBatterRanOut = false;
+        if (isNewBatter) {
+          currentBatterRanOut = false;
+          prevBatterForShift = currentBatterId;
+        }
         currentBatterId = ev.batterId;
+        // A new pitch closes any between-pitch baserunning theater.
+        interThrows = [];
+        pickoffDives.clear();
+        pendingRunStarts.clear();
+        breakingRunners.clear();
+        lastPickoffMove = null;
+        backupRun = null;
         // Any pitch event closes the inter-at-bat dead time (the on-deck
         // batter has reached the box; the at-bat is live).
         const wasInAtBatGap = lastAtBatEndT !== null;
@@ -653,6 +731,132 @@ export const buildScene = (
         });
         break;
       }
+      case 'pickoffAttempt': {
+        // Step-off: the runner dives back while the throw comes over.
+        pickoffDives.set(ev.runnerId, ev.t);
+        lastPickoffMove = { runnerId: ev.runnerId, base: ev.targetBase };
+        break;
+      }
+      case 'pickoffThrow': {
+        const target = baseFor(ev.targetBase);
+        if (ev.accurate) {
+          interThrows.push({
+            startT: ev.t,
+            endT: ev.t + PICKOFF_FLIGHT_TICKS,
+            from: PITCHERS_MOUND,
+            to: target,
+            holdAfter: 6,
+          });
+          lastPlay = 'pickoff attempt!';
+        } else {
+          // Provisional sail-past arc — replaced by the exact landing once
+          // the errantThrow event (TIME_ERRANT_DEFLECT later) is in scope.
+          const overshoot = {
+            x: target.x + (target.x - PITCHERS_MOUND.x) * 0.45,
+            y: target.y + (target.y - PITCHERS_MOUND.y) * 0.45,
+          };
+          interThrows.push({
+            startT: ev.t,
+            endT: ev.t + ERRANT_FLIGHT_TICKS,
+            from: PITCHERS_MOUND,
+            to: overshoot,
+            holdAfter: 0,
+          });
+        }
+        break;
+      }
+      case 'errantThrow': {
+        // Replace the provisional sail-past with the exact deflection path.
+        interThrows.pop();
+        const landing = { x: ev.landingX, y: ev.landingY };
+        interThrows.push({
+          startT: ev.t - ERRANT_FLIGHT_TICKS,
+          endT: ev.t,
+          from: PITCHERS_MOUND,
+          to: landing,
+          holdAfter: BACKUP_RETRIEVE_TICKS,
+        });
+        // The backup OF breaks for the ball; he picks it up when the
+        // backupPlay event fires (BACKUP_RETRIEVE_TICKS later) and jogs
+        // back to his spot after the relay.
+        backupRun = {
+          fielderId: ev.backupFielderId,
+          landing,
+          startT: ev.t - ERRANT_FLIGHT_TICKS,
+          pickupT: ev.t + BACKUP_RETRIEVE_TICKS,
+          returnT: ev.t + BACKUP_RETRIEVE_TICKS + 30,
+        };
+        // The runner who was diving back sees the ball get away and breaks
+        // for the next base — animate the sprint before the outcome event.
+        if (lastPickoffMove && lastPickoffMove.base === ev.targetBase) {
+          pickoffDives.delete(lastPickoffMove.runnerId);
+          breakingRunners.set(lastPickoffMove.runnerId, {
+            t: ev.t,
+            from: lastPickoffMove.base,
+            to: (lastPickoffMove.base === 3 ? 0 : lastPickoffMove.base + 1) as 0 | 1 | 2 | 3,
+            perBaseTicks: BACKUP_RETRIEVE_TICKS + RELAY_FLIGHT_TICKS,
+          });
+        }
+        lastPlay = 'throw gets away — runner takes off!';
+        break;
+      }
+      case 'backupPlay': {
+        // Relay from the retrieved ball to the advancing runner's base, and
+        // start that runner's advance back at the errant-throw moment.
+        if (backupRun) {
+          interThrows.push({
+            startT: ev.t,
+            endT: ev.t + RELAY_FLIGHT_TICKS,
+            from: backupRun.landing,
+            to: baseFor(ev.throwToBase),
+            holdAfter: 8,
+          });
+          pendingRunStarts.set(ev.runnerId, {
+            startT: backupRun.pickupT - BACKUP_RETRIEVE_TICKS,
+            perBaseTicks: BACKUP_RETRIEVE_TICKS + RELAY_FLIGHT_TICKS,
+          });
+        }
+        break;
+      }
+      case 'stealAttempt': {
+        pendingRunStarts.set(ev.runnerId, {
+          startT: ev.t,
+          perBaseTicks: STEAL_RACE_TICKS,
+        });
+        breakingRunners.set(ev.runnerId, {
+          t: ev.t,
+          from: ev.from,
+          to: ev.to,
+          perBaseTicks: STEAL_RACE_TICKS,
+        });
+        pickoffDives.delete(ev.runnerId);
+        // Defense fires to the bag — ball leaves shortly after the break so
+        // it arrives just ahead of the tag.
+        interThrows.push({
+          startT: ev.t + 6,
+          endT: ev.t + 12,
+          from: PITCHERS_MOUND,
+          to: baseFor(ev.to),
+          holdAfter: 6,
+        });
+        const stealer = ctx.input.playerIndex.get(ev.runnerId);
+        lastPlay = `${stealer?.lastName ?? 'runner'} takes off!`;
+        break;
+      }
+      case 'tagAttempt': {
+        const tagRunner = ctx.input.playerIndex.get(ev.runnerId);
+        const nm = tagRunner?.lastName ?? 'runner';
+        const wasSteal = pendingRunStarts.has(ev.runnerId);
+        const baseName = ev.base === 1 ? '1st' : ev.base === 2 ? '2nd' : '3rd';
+        lastPlay = ev.out
+          ? wasSteal
+            ? `${nm} caught stealing ${baseName}!`
+            : `${nm} picked off!`
+          : wasSteal
+            ? `${nm} steals ${baseName}!`
+            : `${nm} back in safely`;
+        break;
+      }
       case 'baserunner': {
         // A new arrival/advance overwrites any stale lead — the next
         // `lead` event for the runner re-establishes the correct base.
@@ -662,8 +866,10 @@ export const buildScene = (
         // throw arrival so the "out" reads correctly.
         const choreo = lastContactT !== null ? choreos.get(lastContactT) : undefined;
         const override = choreo?.runnerOverrides.get(ev.runnerId);
-        const startT = override?.startT ?? ev.t;
-        const perBaseTicks = override?.perBaseTicks ?? RUNNER_TRAVEL_TICKS_PER_BASE;
+        const pendingStart = pendingRunStarts.get(ev.runnerId);
+        const startT = override?.startT ?? pendingStart?.startT ?? ev.t;
+        const perBaseTicks =
+          override?.perBaseTicks ?? pendingStart?.perBaseTicks ?? RUNNER_TRAVEL_TICKS_PER_BASE;
         // The batter became a runner — we don't need to draw an outgoing-
         // walk sprite for them; the runner sprite handles their motion
         // (including walk-off if they're put out at first).
@@ -907,6 +1113,51 @@ export const buildScene = (
   // path with per-position pacing (catcher + pitcher walk; others jog) plus
   // a small staggered delay so the team trickles rather than moving in lock-
   // step.
+  // Pull-side defensive shift vs a batter: infield slides over for power
+  // pull hitters (mirrors the sim's head-coach shift on outcome slices —
+  // cosmetic alignment only). Eased between batters so nobody teleports.
+  const shiftFor = (
+    p: { bats: string; ratings: { power: number } } | null | undefined,
+    slot: FielderPos,
+  ): FieldPoint => {
+    if (!p || slot === 'P' || slot === 'C') return { x: 0, y: 0 };
+    const pull = p.bats === 'L' ? 1 : p.bats === 'R' ? -1 : 0;
+    if (pull === 0) return { x: 0, y: 0 };
+    const lean = Math.min(1, Math.max(0, (p.ratings.power - 55) / 44));
+    if (lean <= 0) return { x: 0, y: 0 };
+    const isInfield = slot === '1B' || slot === '2B' || slot === 'SS' || slot === '3B';
+    return {
+      x: pull * (isInfield ? 13 : 16) * lean,
+      y: (isInfield ? 2 : 5) * lean,
+    };
+  };
+
+  // Idle life at a position: the eased shift plus a slow two-frequency
+  // wander (a few feet of pacing), larger between at-bats when fielders
+  // re-set their depth. Catcher stays planted.
+  const defensiveOffsetFor = (playerId: string, slot: FielderPos): FieldPoint => {
+    const target = shiftFor(batter, slot);
+    const prevBatter = prevBatterForShift
+      ? ctx.input.playerIndex.get(prevBatterForShift)
+      : null;
+    const prev = shiftFor(prevBatter, slot);
+    const ramp =
+      currentAbFirstPitchT !== null
+        ? Math.max(0, Math.min(1, (simTime - currentAbFirstPitchT) / SHIFT_RAMP_TICKS))
+        : 1;
+    const eased = easeInOut(ramp);
+    const sx = prev.x + (target.x - prev.x) * eased;
+    const sy = prev.y + (target.y - prev.y) * eased;
+    if (slot === 'C') return { x: sx, y: sy };
+    const phase = idHash01(playerId) * Math.PI * 2;
+    const radius = (slot === 'P' ? 1.0 : 2.6) * (lastAtBatEndT !== null ? 1.8 : 1);
+    const wx =
+      Math.sin(simTime * 0.045 + phase) * radius +
+      Math.sin(simTime * 0.017 + phase * 2.3) * radius * 0.7;
+    const wy = Math.cos(simTime * 0.036 + phase * 1.4) * radius * 0.8;
+    return { x: sx + wx, y: sy + wy };
+  };
+
   // Returns null when the fielder is inside the dugout (walked off, or not
   // yet emerged) so the caller can skip the sprite entirely.
   const fielderPosFor = (
@@ -953,9 +1204,25 @@ export const buildScene = (
       if (elapsedInWindow < delay) return null;
       return lerpPoint(fieldingDugout, homePos, eased);
     }
-    if (!choreoActive || !activeChoreo) return homePos;
-    const overridden = fielderPositionForChoreo(activeChoreo, simTime, playerId);
-    return overridden ?? homePos;
+    // Backup OF chasing an errant pickoff throw: sprint to the ball, relay,
+    // jog back to the spot.
+    if (backupRun && backupRun.fielderId === playerId) {
+      const b = backupRun;
+      if (simTime >= b.startT && simTime < b.pickupT) {
+        const frac = (simTime - b.startT) / (b.pickupT - b.startT);
+        return lerpPoint(homePos, b.landing, easeInOut(Math.min(1, frac)));
+      }
+      if (simTime >= b.pickupT && simTime < b.returnT) {
+        const frac = (simTime - b.pickupT) / (b.returnT - b.pickupT);
+        return lerpPoint(b.landing, homePos, easeInOut(frac));
+      }
+    }
+    if (choreoActive && activeChoreo) {
+      const overridden = fielderPositionForChoreo(activeChoreo, simTime, playerId);
+      if (overridden) return overridden;
+    }
+    const off = defensiveOffsetFor(playerId, slot);
+    return { x: homePos.x + off.x, y: homePos.y + off.y };
   };
 
   // Build fielders.
@@ -1087,13 +1354,26 @@ export const buildScene = (
   // Note: the batter-as-runner appears here once a baserunner event fires for them.
   if (inningTransition === null && gameEnd === null) {
     for (const [runnerId, latest] of runnerLatest) {
-      const render = computeRunnerRender(
-        latest,
-        simTime,
-        runnerId,
-        battingDugout,
-        runnerLead.get(runnerId),
-      );
+      const breaking = breakingRunners.get(runnerId);
+      const render =
+        breaking && breaking.t > latest.t && simTime >= breaking.t
+          ? {
+              runnerId,
+              position: lerpPoint(
+                baseFor(breaking.from),
+                baseFor(breaking.to),
+                Math.min(1, (simTime - breaking.t) / breaking.perBaseTicks),
+              ),
+              stillVisible: true,
+            }
+          : computeRunnerRender(
+              latest,
+              simTime,
+              runnerId,
+              battingDugout,
+              runnerLead.get(runnerId),
+              pickoffDives.get(runnerId),
+            );
       if (!render.stillVisible) continue;
       runners.push({
         id: runnerId,
@@ -1226,6 +1506,24 @@ export const buildScene = (
   // (Inning-end ball tossing was retired when the walk-off window grew to
   // cover the whole gap — fielders leave their positions too early to
   // receive casual lobs. Around-the-horn after mid-inning strikeouts stays.)
+
+  // Between-pitch throws — pickoffs, steal plays, backup relays. These
+  // override the parked ball while their window is live.
+  for (const th of interThrows) {
+    if (simTime >= th.startT && simTime <= th.endT + th.holdAfter) {
+      if (simTime <= th.endT && th.endT > th.startT) {
+        const frac = (simTime - th.startT) / (th.endT - th.startT);
+        ballPos = lerpPoint(th.from, th.to, frac);
+        ballHeight = 5 * Math.sin(frac * Math.PI);
+        ballInFlight = true;
+      } else {
+        ballPos = th.to;
+        ballHeight = 0;
+        ballInFlight = false;
+      }
+      ballVisible = true;
+    }
+  }
 
   // HUD aggregates — derived from the same event prefix so the line score,
   // batter card, and on-deck indicator always agree with what's on the field.

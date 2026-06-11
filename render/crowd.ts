@@ -94,6 +94,44 @@ const tracePolygon = (
   ctx.closePath();
 };
 
+// Facade wall between two stacked tiers. The upper tiers sit further out
+// AND are lifted vertically (riseLiftPx) to fake elevation, which leaves a
+// sky-colored strip between each tier band. This ribbon spans from the
+// lower tier's outer edge (at its lift) to the upper tier's inner edge (at
+// its lift), reading as the concourse/facade wall a real stadium has there.
+const drawTierRiser = (
+  ctx: CanvasRenderingContext2D,
+  front: readonly BowlPoint[],
+  fromTier: BowlTierSpec,
+  toTier: BowlTierSpec,
+  color: string,
+): void => {
+  const PAD = 1.5; // overlap into both tiers so no antialiased seam survives
+  const inner: { x: number; y: number }[] = [];
+  const outer: { x: number; y: number }[] = [];
+  const fromEdge = fromTier.innerOffsetPx + fromTier.depthPx - PAD;
+  const toEdge = toTier.innerOffsetPx + PAD;
+  for (const p of front) {
+    inner.push({
+      x: p.screen.x + p.outward.nx * fromEdge,
+      y: p.screen.y + p.outward.ny * fromEdge - fromTier.riseLiftPx,
+    });
+    outer.push({
+      x: p.screen.x + p.outward.nx * toEdge,
+      y: p.screen.y + p.outward.ny * toEdge - toTier.riseLiftPx,
+    });
+  }
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  tracePolygon(ctx, inner, outer);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+};
+
 // Draw the structural fill (concrete back wall + section block colors) for
 // a tier. This is the layer that turns the old "picket fence" into a real
 // stadium silhouette: a solid polygon, then a per-section color sweep
@@ -311,6 +349,11 @@ export const drawStadiumBowlBack = (args: CrowdArgs): void => {
     args.waveStrength && args.waveStrength > 0 && args.waveCenterAngleDeg !== undefined
       ? { centerDeg: args.waveCenterAngleDeg, strength: args.waveStrength }
       : undefined;
+
+  // Riser facades first — they fill the concourse + elevation strips
+  // between tiers; the tier fills then overlap their edges.
+  drawTierRiser(ctx, bowl.front, bowl.tiers.lower, bowl.tiers.upper, '#262b33');
+  drawTierRiser(ctx, bowl.front, bowl.tiers.upper, bowl.tiers.roof, '#1c2129');
 
   // Upper deck + fans.
   drawTierStructure(ctx, bowl.front, bowl.tiers.upper);
